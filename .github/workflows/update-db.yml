@@ -47,6 +47,14 @@ jobs:
           else
             echo "skip build:db (script not found)"
           fi
+      - name: Build data from upstream if missing
+        run: |
+          if [ ! -d public/db ] || [ ! -f public/db/dict.bin ] || [ ! -d public/db/chunks ] || [ $(ls -1 public/db/chunks 2>/dev/null | wc -l) -lt 200 ]; then
+            echo "fallback: generate from upstream dataset"
+            node scripts/gen-from-source.mjs
+          else
+            echo "db exists, skip upstream generation"
+          fi
       - name: Build frontend
         run: npm run build
       - name: Prepare deploy content

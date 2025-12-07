@@ -216,16 +216,40 @@ async function onSearch() {
 
       
       <div class="bg-[#2d2d2d] rounded-xl p-8 border border-gray-700">
-        <h2 class="text-2xl font-bold mb-6 flex items-center gap-2 text-white"><i class="fas fa-book text-blue-500"></i> 资产式 API 使用说明</h2>
+        <h2 class="text-2xl font-bold mb-6 flex items-center gap-2 text-white"><i class="fas fa-book text-blue-500"></i> 使用说明</h2>
         <div class="space-y-8">
-          <div><h3 class="text-lg font-semibold text-blue-400 mb-2">资源</h3><div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300"><div>/db/dict.bin</div><div>/db/chunks/a{0..255}.bin</div></div></div>
-          <div><h3 class="text-lg font-semibold text-blue-400 mb-2">流程</h3><div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300"><div>1) 将 IPv4 转整型</div><div>2) 加载 dict.bin</div><div>3) 按首段加载 a{X}.bin</div><div>4) 二分查找命中区间还原三元组</div></div></div>
-          <div><h3 class="text-lg font-semibold text-green-400 mb-2">示例响应</h3><div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300"><pre>{
+          <div>
+            <h3 class="text-lg font-semibold text-blue-400 mb-2">静态资源（前端本地查询）</h3>
+            <div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300">
+              <div>/db/dict.bin</div>
+              <div>/db/chunks/a{0..255}.bin</div>
+            </div>
+          </div>
+          <div>
+            <h3 class="text-lg font-semibold text-blue-400 mb-2">查询流程</h3>
+            <div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300">
+              <div>1) 将 IPv4 转整型</div>
+              <div>2) 加载 dict.bin</div>
+              <div>3) 按首段加载 a{X}.bin</div>
+              <div>4) 二分查找命中区间，还原三元组</div>
+            </div>
+          </div>
+          <div>
+            <h3 class="text-lg font-semibold text-purple-400 mb-2">外部接口（Workers）</h3>
+            <div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300">
+              <div>GET /api/ip?ip=8.8.8.8</div>
+              <div>响应头：content-type: application/json; charset=utf-8</div>
+            </div>
+          </div>
+          <div>
+            <h3 class="text-lg font-semibold text-green-400 mb-2">示例响应</h3>
+            <div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300"><pre>{
   "ip": "8.8.8.8",
   "country": "美国",
   "province": "加利福尼亚",
   "city": "山景城"
-}</pre></div></div>
+}</pre></div>
+          </div>
         </div>
       </div>
 

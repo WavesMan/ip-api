@@ -48,12 +48,13 @@ async function main() {
   if (!dictDone || !chunksDone) {
     const dataPath = path.resolve(root, 'edge-functions', 'data.js')
     if (fs.existsSync(dataPath)) {
+      process.stdout.write('data.js found\n')
       const mod = await import(pathToFileURL(dataPath).href)
       if (mod && mod.DB) {
         const DB = Buffer.from(mod.DB)
         const findAll = (magic) => {
           const idxs = []
-          const m = Buffer.from(magic)
+          const m = typeof magic === 'string' ? Buffer.from(magic) : Buffer.from(magic)
           let i = 0
           while (true) {
             const p = DB.indexOf(m, i)
@@ -63,8 +64,9 @@ async function main() {
           }
           return idxs
         }
-        const ipdc = findAll('IPDC')
-        const ipch = findAll('IPCH')
+        const ipdc = findAll([0x49,0x50,0x44,0x43])
+        const ipch = findAll([0x49,0x50,0x43,0x48])
+        process.stdout.write(`markers IPDC:${ipdc.length} IPCH:${ipch.length}\n`)
         if (!dictDone && ipdc.length > 0) {
           const start = ipdc[0]
           const end = ipch.length > 0 ? ipch[0] : DB.length
@@ -82,7 +84,11 @@ async function main() {
           }
           chunksDone = true
         }
+      } else {
+        process.stdout.write('data.js missing DB export\n')
       }
+    } else {
+      process.stdout.write('data.js not found\n')
     }
   }
 
