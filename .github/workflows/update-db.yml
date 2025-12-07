@@ -24,30 +24,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Enable Corepack
-        run: corepack enable
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-          run_install: false
-      - name: Prepare pnpm via Corepack (fallback)
-        run: corepack prepare pnpm@10 -activate
-      - name: Cache pnpm store
-        uses: actions/cache@v4
-        with:
-          path: ~/.pnpm-store
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-      - name: Install
-        run: pnpm install --frozen-lockfile=false
+          cache: npm
+      - name: Install dependencies (npm)
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
       - name: Build data
-        run: pnpm run build:db
+        run: |
+          if [ -f scripts/build-db.mjs ]; then
+            node scripts/build-db.mjs
+          elif npm run | grep -q "build:db"; then
+            npm run build:db
+          else
+            echo "skip build:db (script not found)"
+          fi
       - name: Build frontend
-        run: pnpm run build
+        run: npm run build
       - name: Prepare deploy content
         run: |
           rm -rf deploy && mkdir -p deploy
