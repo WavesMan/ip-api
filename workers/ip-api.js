@@ -129,9 +129,11 @@ function jsonResponse(obj) {
   })
 }
 
-addEventListener('fetch', event => {
-  event.respondWith(handle(event.request))
-})
+if (typeof addEventListener === 'function') {
+  addEventListener('fetch', event => {
+    event.respondWith(handle(event.request))
+  })
+}
 
 async function handle(req) {
   const url = new URL(req.url)
@@ -149,3 +151,6 @@ async function handle(req) {
   return fetch(req)
 }
 
+export default async function(request) {
+  return handle(request)
+}
