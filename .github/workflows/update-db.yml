@@ -57,6 +57,25 @@ jobs:
           cp workers/ip-api.js deploy/workers/ || true
           cp edgeone.config.js deploy/ || true
           if [ -d public ]; then cp -r public/* deploy/; fi
+      - name: Verify deploy db files
+        run: |
+          echo "verify deploy/db"
+          if [ -d deploy/db ]; then
+            ls -la deploy/db || true
+            if [ -f deploy/db/dict.bin ]; then
+              echo "dict.bin: ok"
+            else
+              echo "dict.bin: MISSING"
+            fi
+            if [ -d deploy/db/chunks ]; then
+              COUNT=$(find deploy/db/chunks -type f | wc -l)
+              echo "chunks files: ${COUNT}"
+            else
+              echo "chunks dir: MISSING"
+            fi
+          else
+            echo "deploy/db: MISSING"
+          fi
       - name: Publish to pages branch
         run: |
           DEPLOY_DIR="$(pwd)/deploy"
