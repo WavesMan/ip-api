@@ -60,13 +60,14 @@ jobs:
           if [ -d public ]; then cp -r public/* deploy/; fi
       - name: Publish to pages branch
         run: |
+          DEPLOY_DIR="$(pwd)/deploy"
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git fetch origin
           git checkout -B pages
           git rm -r --cached . || true
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -r deploy/* .
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name deploy -exec rm -rf {} +
+          cp -r "$DEPLOY_DIR"/* .
           git add .
           git commit -m "deploy: update pages content" || echo "No changes to commit"
           git push -f origin pages
