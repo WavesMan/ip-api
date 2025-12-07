@@ -53,9 +53,8 @@ jobs:
         run: |
           rm -rf deploy && mkdir -p deploy
           cp -r dist/* deploy/
-          mkdir -p deploy/edge-functions/chunks
-          cp edge-functions/dict.js deploy/edge-functions/ || true
-          cp -r edge-functions/chunks deploy/edge-functions/ || true
+          mkdir -p deploy/workers
+          cp workers/ip-api.js deploy/workers/ || true
           cp edgeone.config.js deploy/ || true
           if [ -d public ]; then cp -r public/* deploy/; fi
       - name: Publish to pages branch

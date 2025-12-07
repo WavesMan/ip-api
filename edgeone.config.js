@@ -1,6 +1,5 @@
 module.exports = {
   routes: [
-    { path: "/api/ip", function: "./edge-functions/ip-lookup.js" },
-    { path: "/api/stats", function: "./edge-functions/stats.js" },
+    { path: "/api/ip", function: "./workers/ip-api.js" },
   ],
 };

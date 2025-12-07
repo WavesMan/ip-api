@@ -1,23 +1,130 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref } from 'vue'
 
-const visitor = ref(null)
 const queryIp = ref('')
 const searchResult = ref(null)
-const stats = ref({ total: 0, today: 0 })
 const error = ref('')
 const loading = ref(false)
-const copied = ref(false)
 
-const endpoint = computed(() => `${window.location.origin}/api/ip`)
+let dictLoaded = false
+let strings = null
+let triples = null
+const chunkCache = new Map()
 
-async function fetchVisitor() {
-  try {
-    const res = await fetch('/api/ip')
-    if (res.ok) visitor.value = await res.json()
-  } catch (e) {
-    console.error(e)
+function ipToInt(ip) {
+  const p = ip.split('.')
+  if (p.length !== 4) return null
+  for (let i = 0; i < 4; i++) {
+    const n = Number(p[i])
+    if (!Number.isInteger(n) || n < 0 || n > 255) return null
   }
+  return ((Number(p[0]) << 24) >>> 0) + (Number(p[1]) << 16) + (Number(p[2]) << 8) + Number(p[3])
+}
+
+async function fetchBin(url) {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error('资源加载失败')
+  return new Uint8Array(await res.arrayBuffer())
+}
+
+async function ensureDict() {
+  if (dictLoaded) return
+  const DB = await fetchBin('/db/dict.bin')
+  const dv = new DataView(DB.buffer, DB.byteOffset, DB.byteLength)
+  let off = 0
+  const m0 = dv.getUint8(off++)
+  const m1 = dv.getUint8(off++)
+  const m2 = dv.getUint8(off++)
+  const m3 = dv.getUint8(off++)
+  if (!(m0 === 0x49 && m1 === 0x50 && m2 === 0x44 && m3 === 0x43)) {
+    strings = []
+    triples = []
+    dictLoaded = true
+    return
+  }
+  const ver = dv.getUint8(off++)
+  const strCount = dv.getUint32(off, true); off += 4
+  const triCount = dv.getUint32(off, true); off += 4
+  strings = new Array(strCount)
+  const td = new TextDecoder()
+  for (let i = 0; i < strCount; i++) {
+    const len = dv.getUint16(off, true); off += 2
+    const bytes = DB.subarray(off, off + len); off += len
+    strings[i] = td.decode(bytes)
+  }
+  triples = new Array(triCount)
+  for (let i = 0; i < triCount; i++) {
+    const a = dv.getUint16(off, true); off += 2
+    const b = dv.getUint16(off, true); off += 2
+    const c = dv.getUint16(off, true); off += 2
+    triples[i] = [a, b, c]
+  }
+  dictLoaded = true
+}
+
+async function loadChunk(a) {
+  const cached = chunkCache.get(a)
+  if (cached) return cached
+  const DB = await fetchBin(`/db/chunks/a${a}.bin`)
+  const dv = new DataView(DB.buffer, DB.byteOffset, DB.byteLength)
+  let off = 0
+  const m0 = dv.getUint8(off++)
+  const m1 = dv.getUint8(off++)
+  const m2 = dv.getUint8(off++)
+  const m3 = dv.getUint8(off++)
+  if (!(m0 === 0x49 && m1 === 0x50 && m2 === 0x43 && m3 === 0x48)) {
+    const arr = []
+    chunkCache.set(a, arr)
+    return arr
+  }
+  const ver = dv.getUint8(off++)
+  const recCount = dv.getUint32(off, true); off += 4
+  const readVar = () => {
+    let x = 0
+    let shift = 0
+    while (true) {
+      const b = dv.getUint8(off++)
+      x |= (b & 0x7f) << shift
+      if ((b & 0x80) === 0) break
+      shift += 7
+    }
+    return x >>> 0
+  }
+  const records = new Array(recCount)
+  let prevStart = 0
+  for (let i = 0; i < recCount; i++) {
+    const delta = readVar()
+    const start = (prevStart + delta) >>> 0
+    const len = readVar()
+    const end = (start + len) >>> 0
+    const t = dv.getUint16(off, true); off += 2
+    records[i] = [start, end, t]
+    prevStart = start
+  }
+  chunkCache.set(a, records)
+  return records
+}
+
+async function lookup(ip) {
+  await ensureDict()
+  const val = ipToInt(ip)
+  if (val == null) return { country: null, province: null, city: null }
+  const a = (val >>> 24) & 0xff
+  const records = await loadChunk(a)
+  let lo = 0
+  let hi = records.length - 1
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1
+    const r = records[mid]
+    if (val < r[0]) hi = mid - 1; else if (val > r[1]) lo = mid + 1; else {
+      const tri = triples[r[2]] || [0, 0, 0]
+      const country = strings[tri[0]] || null
+      const province = strings[tri[1]] || null
+      const city = strings[tri[2]] || null
+      return { country, province, city }
+    }
+  }
+  return { country: null, province: null, city: null }
 }
 
 async function onSearch() {
@@ -26,37 +133,14 @@ async function onSearch() {
   error.value = ''
   searchResult.value = null
   try {
-    const res = await fetch(`/api/ip?ip=${queryIp.value}`)
-    if (!res.ok) throw new Error('查询失败')
-    searchResult.value = await res.json()
+    const res = await lookup(queryIp.value)
+    searchResult.value = { ip: queryIp.value, ...res }
   } catch (e) {
-    error.value = e.message
+    error.value = e.message || '查询失败'
   } finally {
     loading.value = false
   }
 }
-
-async function fetchStats() {
-  try {
-    const res = await fetch('/api/stats')
-    if (res.ok) stats.value = await res.json()
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-async function copyEndpoint() {
-  try {
-    await navigator.clipboard.writeText(endpoint.value)
-    copied.value = true
-    setTimeout(() => { copied.value = false }, 2000)
-  } catch {}
-}
-
-onMounted(() => {
-  fetchVisitor()
-  fetchStats()
-})
 </script>
 
 <template>
@@ -89,27 +173,7 @@ onMounted(() => {
           基于边缘函数构建的 IP 归属地查询服务
         </p>
 
-        <div class="flex flex-wrap justify-center gap-3 mb-6">
-          <div class="px-3 py-2 rounded bg-[#2d2d2d] border border-gray-700 text-sm text-gray-300">
-            <span class="text-gray-500">累计服务</span>
-            <span class="ml-2 font-mono font-bold">{{ stats.total }}</span>
-          </div>
-          <div class="px-3 py-2 rounded bg-[#2d2d2d] border border-gray-700 text-sm text-gray-300">
-            <span class="text-gray-500">今日调用</span>
-            <span class="ml-2 font-mono font-bold">{{ stats.today }}</span>
-          </div>
-          <div class="px-3 py-2 rounded bg-[#2d2d2d] border border-gray-700 text-sm text-gray-300">
-             <span class="text-gray-500">API 端点：</span>
-             <div class="mt-1 inline-flex items-center gap-2">
-               <span class="font-mono break-all">{{ endpoint }}</span>
-               <button @click="copyEndpoint" class="px-2 py-1 bg-gray-800 hover:bg-blue-600 rounded text-xs border border-gray-700 transition-colors flex items-center gap-1 ml-1">
-                 <i class="fas fa-copy"></i>
-                 <span v-if="!copied">复制</span>
-                 <span v-else>已复制</span>
-               </button>
-             </div>
-          </div>
-        </div>
+        <div class="flex flex-wrap justify-center gap-3 mb-6"></div>
         
         <div class="max-w-2xl mx-auto relative">
           <input 
@@ -147,57 +211,21 @@ onMounted(() => {
           </div>
           <div class="flex justify-between items-center pt-4 border-t border-gray-700 mt-auto text-sm text-gray-500 relative z-10"><div class="flex items-center gap-2"><i class="fas fa-check-circle text-green-500"></i><span>查询成功</span></div></div>
         </div>
-        <div v-else-if="visitor" class="bg-[#2d2d2d] rounded-xl p-6 hover:-translate-y-1 hover:shadow-xl hover:shadow-black/30 transition-all border border-transparent hover:border-gray-700 flex flex-col w-full max-w-xl">
-          <div class="flex justify-between items-start mb-4"><div class="flex-1 min-w-0"><h3 class="text-xl font-bold text-blue-400 truncate">您的当前 IP</h3><p class="text-xs text-gray-500 font-mono mt-1 truncate">{{ visitor.ip }}</p></div><div class="bg-gray-800 text-xs px-2 py-1 rounded text-gray-400 whitespace-nowrap ml-2">Current</div></div>
-          <div class="space-y-2 mb-6 flex-grow"><div class="flex justify-between border-b border-gray-700/50 pb-2"><span class="font-medium">{{ visitor.country || '-' }}</span><span class="text-gray-500">国家</span></div><div class="flex justify-between border-b border-gray-700/50 pb-2"><span class="font-medium">{{ visitor.province || '-' }}</span><span class="text-gray-500">省份</span></div><div class="flex justify-between"><span class="font-medium">{{ visitor.city || '-' }}</span><span class="text-gray-500">城市</span></div></div>
-          <div class="flex justify-between items-center pt-4 border-t border-gray-700 mt-auto text-sm text-gray-500"><div class="flex items-center gap-2"><i class="fas fa-map-marker-alt"></i><span>自动检测</span></div></div>
-        </div>
+        
       </div>
 
       
       <div class="bg-[#2d2d2d] rounded-xl p-8 border border-gray-700">
-        <h2 class="text-2xl font-bold mb-6 flex items-center gap-2 text-white">
-          <i class="fas fa-book text-blue-500"></i> API 使用说明
-        </h2>
-        
+        <h2 class="text-2xl font-bold mb-6 flex items-center gap-2 text-white"><i class="fas fa-book text-blue-500"></i> 资产式 API 使用说明</h2>
         <div class="space-y-8">
-          <div>
-            <h3 class="text-lg font-semibold text-blue-400 mb-2">1. 基础 IP 查询</h3>
-            <p class="text-gray-400 mb-3">查询指定 IPv4 地址的归属地信息。</p>
-            <div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700">
-              <div class="flex gap-2 mb-2">
-                <span class="text-purple-400">GET</span>
-                <span class="text-gray-300">/api/ip?ip={ip_address}</span>
-              </div>
-              <div class="text-gray-500">// 示例：查询 8.8.8.8</div>
-              <div class="text-blue-300 mb-2">curl "{{ endpoint }}?ip=8.8.8.8"</div>
-            </div>
-          </div>
-
-          <div>
-            <h3 class="text-lg font-semibold text-blue-400 mb-2">2. 访客 IP 识别</h3>
-            <p class="text-gray-400 mb-3">不带参数调用接口，自动返回调用者的 IP 归属地。</p>
-            <div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700">
-              <div class="flex gap-2 mb-2">
-                <span class="text-purple-400">GET</span>
-                <span class="text-gray-300">/api/ip</span>
-              </div>
-              <div class="text-blue-300 mb-2">curl "{{ endpoint }}"</div>
-            </div>
-          </div>
-
-          <div>
-            <h3 class="text-lg font-semibold text-green-400 mb-2">响应格式</h3>
-            <p class="text-gray-400 mb-3">所有接口均返回标准 JSON 格式数据。</p>
-            <div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300">
-<pre>{
+          <div><h3 class="text-lg font-semibold text-blue-400 mb-2">资源</h3><div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300"><div>/db/dict.bin</div><div>/db/chunks/a{0..255}.bin</div></div></div>
+          <div><h3 class="text-lg font-semibold text-blue-400 mb-2">流程</h3><div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300"><div>1) 将 IPv4 转整型</div><div>2) 加载 dict.bin</div><div>3) 按首段加载 a{X}.bin</div><div>4) 二分查找命中区间还原三元组</div></div></div>
+          <div><h3 class="text-lg font-semibold text-green-400 mb-2">示例响应</h3><div class="bg-[#1a1a1a] p-4 rounded-lg font-mono text-sm border border-gray-700 text-gray-300"><pre>{
   "ip": "8.8.8.8",
   "country": "美国",
   "province": "加利福尼亚",
   "city": "山景城"
-}</pre>
-            </div>
-          </div>
+}</pre></div></div>
         </div>
       </div>
 
