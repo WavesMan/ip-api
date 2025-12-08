@@ -34,6 +34,7 @@ FROM alpine:3.20
 
 # 创建非特权用户
 RUN adduser -D -H -u 10001 appuser
+RUN apk add --no-cache su-exec
 
 WORKDIR /app
 
@@ -56,5 +57,5 @@ ENV ADDR=:8080 \
 EXPOSE 8080
 
 # 切换非特权用户并启动
-USER appuser
-CMD ["/app/ip-api"]
+USER root
+ENTRYPOINT ["/bin/sh","-c","chown -R 10001:10001 /app/data/localdb /app/data/ipip 2>/dev/null || true; exec su-exec appuser /app/ip-api"]
