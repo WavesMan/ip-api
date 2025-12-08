@@ -64,6 +64,12 @@ func (s *Store) LookupIP(ctx context.Context, ip string) (*Location, error) {
 		return nil, nil
 	}
 	logger.L().Debug("db_lookup_begin", "ip", ip, "val", int64(val))
+	row0 := s.db.QueryRowContext(ctx, "SELECT country, region, province, city, isp FROM _ip_overrides_kv WHERE ip_int=$1 LIMIT 1", int64(val))
+	var lk Location
+	if err := row0.Scan(&lk.Country, &lk.Region, &lk.Province, &lk.City, &lk.ISP); err == nil {
+		logger.L().Debug("db_override_kv_hit", "ip_val", int64(val))
+		return &lk, nil
+	}
 	row := s.db.QueryRowContext(ctx, "SELECT location_id FROM _ip_overrides WHERE ip_int=$1 LIMIT 1", int64(val))
 	var locID int
 	if err := row.Scan(&locID); err != nil {

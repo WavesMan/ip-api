@@ -39,9 +39,20 @@ func EnsureSchema(db *sql.DB) error {
          VALUES(1, 0, 0)
          ON CONFLICT (id) DO NOTHING`,
 		`CREATE TABLE IF NOT EXISTS _ip_overrides (
-            ip_int BIGINT PRIMARY KEY,
-            location_id INT NOT NULL REFERENCES _ip_locations(id)
-        )`,
+			ip_int BIGINT PRIMARY KEY,
+			location_id INT NOT NULL REFERENCES _ip_locations(id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS _ip_overrides_kv (
+			assoc_key TEXT NOT NULL DEFAULT 'global',
+			ip_int BIGINT NOT NULL,
+			country TEXT NOT NULL,
+			region TEXT NOT NULL,
+			province TEXT NOT NULL,
+			city TEXT NOT NULL,
+			isp TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (assoc_key, ip_int)
+		)`,
 		`CREATE TABLE IF NOT EXISTS _ip_exact (
             ip_int BIGINT PRIMARY KEY,
             location_id INT NOT NULL REFERENCES _ip_locations(id),
@@ -72,6 +83,6 @@ func EnsureSchema(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE _ip_ipv4_ranges ADD CONSTRAINT _ip_ipv4_ranges_location_id_fkey FOREIGN KEY (location_id) REFERENCES _ip_locations(id) DEFERRABLE INITIALLY DEFERRED`); err != nil {
 		return err
 	}
-	logger.L().Debug("schema_done", "tables", "_ip_locations,_ip_overrides,_ip_exact,_ip_cidr_special,_ip_stats_total,_ip_stats_daily")
+	logger.L().Debug("schema_done", "tables", "_ip_locations,_ip_overrides,_ip_overrides_kv,_ip_exact,_ip_cidr_special,_ip_stats_total,_ip_stats_daily")
 	return nil
 }

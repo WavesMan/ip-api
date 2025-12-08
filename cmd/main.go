@@ -137,6 +137,8 @@ func main() {
 		for {
 			var haveOverrides int64
 			_ = db.QueryRow("SELECT COUNT(1) FROM _ip_overrides").Scan(&haveOverrides)
+			var haveOverridesKV int64
+			_ = db.QueryRow("SELECT COUNT(1) FROM _ip_overrides_kv").Scan(&haveOverridesKV)
 			var mc interface {
 				Lookup(string) (localdb.Location, bool)
 			}
@@ -146,7 +148,7 @@ func main() {
 			var iptree interface {
 				Lookup(string) (localdb.Location, bool)
 			}
-			if haveOverrides > 0 {
+			if haveOverrides > 0 || haveOverridesKV > 0 {
 				if err := localdb.BuildExactDBFromDB(fileDir, db); err == nil {
 					if edb, err := localdb.NewExactDB(fileDir, db); err == nil {
 						exact = edb
