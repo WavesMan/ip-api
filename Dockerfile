@@ -6,7 +6,6 @@ WORKDIR /app/ui
 
 # 仅复制依赖清单，提升缓存复用效率
 COPY ui/package.json ./
-COPY ui/package-lock.json ./
 
 # 优先使用 ci，如无锁文件则回退 install
 RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
