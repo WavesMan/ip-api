@@ -182,6 +182,45 @@ func main() {
 	}()
 	apiMux := api.BuildRoutes(st, rc, &dcache)
 	mux.Handle(apiBase+"/", http.StripPrefix(apiBase, apiMux))
+	mux.HandleFunc(apiBase+"/reload-exact", func(w http.ResponseWriter, r *http.Request) {
+		t := r.Header.Get("x-admin-token")
+		if t == "" || t != os.Getenv("ADMIN_TOKEN") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		lang := os.Getenv("IPIP_LANG")
+		if lang == "" {
+			lang = "zh-CN"
+		}
+		var exact interface {
+			Lookup(string) (localdb.Location, bool)
+		}
+		if err := localdb.BuildExactDBFromDB(fileDir, db); err == nil {
+			if edb, err := localdb.NewExactDB(fileDir, db); err == nil {
+				exact = edb
+				l.Info("exactdb_reloaded")
+			} else {
+				l.Error("exactdb_open_error", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		} else {
+			l.Error("exactdb_build_error", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var iptree interface {
+			Lookup(string) (localdb.Location, bool)
+		}
+		if iptree2, err := localdb.NewIPIPCache(ipipPath, lang); err == nil {
+			iptree = iptree2
+		} else {
+			l.Error("ipiptree_error", "err", err)
+		}
+		mc := localdb.NewMultiCache(exact, iptree)
+		dcache.Set(mc)
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	fs := http.FileServer(http.Dir(ui))
 	mux.Handle("/", fs)

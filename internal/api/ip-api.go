@@ -247,6 +247,27 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 		l.Debug("api_ip_query", "ip", ip, "ipv6", isIPv6)
 		var res queryResult
 		res.IP = ip
+		// KV 覆盖前置：若命中则直接返回，覆盖文件缓存
+		if ip != "" && !isIPv6 {
+			if kv, _ := st.LookupKV(ctx, ip); kv != nil {
+				res.Country = kv.Country
+				res.Region = kv.Region
+				res.Province = kv.Province
+				res.City = kv.City
+				res.ISP = kv.ISP
+				if rc != nil {
+					b, _ := json.Marshal(res)
+					_ = rc.Set(ctx, "ip:"+ip, string(b), time.Duration(cacheSec)*time.Second).Err()
+				}
+				w.Header().Set("content-type", "application/json; charset=utf-8")
+				w.Header().Set("cache-control", "no-store")
+				_ = json.NewEncoder(w).Encode(res)
+				if added {
+					_ = st.IncrStats(ctx, ip)
+				}
+				return
+			}
+		}
 		// 背景：热点查询结果写入 Redis，降低重复请求对下游的压力
 		// 约束：过期时间固定 24h；命中后直接返回并累加统计
 		if ip != "" && rc != nil {

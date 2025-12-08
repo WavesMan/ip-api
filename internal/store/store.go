@@ -97,6 +97,19 @@ func (s *Store) LookupIP(ctx context.Context, ip string) (*Location, error) {
 	return &l, nil
 }
 
+func (s *Store) LookupKV(ctx context.Context, ip string) (*Location, error) {
+	val, err := ipToInt(ip)
+	if err != nil {
+		return nil, nil
+	}
+	row := s.db.QueryRowContext(ctx, "SELECT country, region, province, city, isp FROM _ip_overrides_kv WHERE ip_int=$1 LIMIT 1", int64(val))
+	var l Location
+	if err := row.Scan(&l.Country, &l.Region, &l.Province, &l.City, &l.ISP); err != nil {
+		return nil, nil
+	}
+	return &l, nil
+}
+
 // IncrStats: 成功查询后递增总计与当日计数；访客存在时递增访客计数
 func (s *Store) IncrStats(ctx context.Context, visitor string) error {
 	_, _ = s.db.ExecContext(ctx, "UPDATE _ip_stats_total SET total_queries=total_queries+1 WHERE id=1")
