@@ -197,7 +197,15 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 }) *http.ServeMux {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
-		m := map[string]any{"commit": version.Commit, "builtAt": version.BuiltAt}
+		commit := version.Commit
+		built := version.BuiltAt
+		if commit == "" || strings.ToLower(commit) == "unknown" {
+			commit = "dev"
+		}
+		if strings.ToLower(built) == "unknown" {
+			built = ""
+		}
+		m := map[string]any{"commit": commit, "builtAt": built}
 		w.Header().Set("content-type", "application/json; charset=utf-8")
 		w.Header().Set("cache-control", "no-store")
 		_ = json.NewEncoder(w).Encode(m)

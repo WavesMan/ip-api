@@ -27,8 +27,8 @@ RUN go mod download
 
 # 复制后端源码并构建静态二进制
 COPY . .
-ARG GIT_SHA=unknown
-ARG BUILD_TIME=unknown
+ARG GIT_SHA=dev
+ARG BUILD_TIME=
 RUN go clean -cache -modcache -testcache || true && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-X ip-api/internal/version.Commit=$GIT_SHA -X ip-api/internal/version.BuiltAt=$BUILD_TIME" -o /out/ip-api ./cmd/main.go
 
