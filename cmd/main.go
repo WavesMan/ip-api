@@ -72,10 +72,8 @@ func main() {
 		ipipPath = filepath.Join("data", "ipip", "ipipfree.ipdb")
 	}
 	l.Debug("config_ipip_path", "path", ipipPath)
-	var rngCount int64
-	_ = db.QueryRow("SELECT COUNT(1) FROM _ip_ipv4_ranges").Scan(&rngCount)
-	l.Debug("ranges_count_before_import", "count", rngCount)
-	if rngCount == 0 {
+	importIP := os.Getenv("IMPORT_IPIP_TO_DB") == "true"
+	if importIP {
 		if _, err := os.Stat(ipipPath); err == nil {
 			l.Info("ipip_found", "path", ipipPath)
 			if r, err := ipip.Open(ipipPath); err == nil {
@@ -98,8 +96,34 @@ func main() {
 			l.Error("ipip_not_found", "path", ipipPath)
 		}
 	} else {
-		l.Info("ipip_import_skipped", "reason", "ranges_not_empty")
+		l.Info("ipip_import_skipped", "reason", "sql_no_cidr_default")
 	}
+
+	// 数据库健康度自检与自愈（表被删除或为空时自动重建并导入特例段）
+	go func() {
+		autoRepair := os.Getenv("AUTO_REPAIR_DB")
+		if autoRepair == "" || autoRepair == "true" {
+			var locCount, specialCount int64
+			_ = db.QueryRow("SELECT COUNT(1) FROM _ip_locations").Scan(&locCount)
+			_ = db.QueryRow("SELECT COUNT(1) FROM _ip_cidr_special").Scan(&specialCount)
+			if (locCount == 0 || specialCount == 0) && ipipPath != "" {
+				if r, err := ipip.Open(ipipPath); err == nil {
+					lang := os.Getenv("IPIP_LANG")
+					if lang == "" {
+						lang = "zh-CN"
+					}
+					l.Info("ipip_special_import_begin", "lang", lang)
+					if err := ipip.ImportIPv4LeavesToSpecial(db, r, lang, "ipip"); err != nil {
+						l.Error("ipip_special_import_error", "err", err)
+					} else {
+						l.Info("ipip_special_import_success")
+					}
+				} else {
+					l.Error("ipip_open_error", "err", err)
+				}
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
 	// 背景：读取已下载的 mmdb 构建查询服务；失败不影响静态文件与数据库导入部分
@@ -110,23 +134,44 @@ func main() {
 	var dcache localdb.DynamicCache
 	go func() {
 		for {
-			var c int64
-			row := db.QueryRow("SELECT COUNT(1) FROM _ip_ipv4_ranges")
-			_ = row.Scan(&c)
-			if c > 0 {
-				if err := localdb.BuildFilesFromDB(fileDir, db); err != nil {
-					l.Error("filecache_build_error", "err", err)
-					time.Sleep(2 * time.Second)
-					continue
-				}
-				if fc, err := localdb.NewFileCache(fileDir); err == nil {
-					dcache.Set(fc)
-					l.Info("filecache_ready")
+			var haveOverrides int64
+			_ = db.QueryRow("SELECT COUNT(1) FROM _ip_overrides").Scan(&haveOverrides)
+			var mc interface {
+				Lookup(string) (localdb.Location, bool)
+			}
+			var exact interface {
+				Lookup(string) (localdb.Location, bool)
+			}
+			var iptree interface {
+				Lookup(string) (localdb.Location, bool)
+			}
+			if haveOverrides > 0 {
+				if err := localdb.BuildExactDBFromDB(fileDir, db); err == nil {
+					if edb, err := localdb.NewExactDB(fileDir, db); err == nil {
+						exact = edb
+						l.Info("exactdb_ready")
+					}
 				} else {
-					l.Error("filecache_init_error", "err", err)
-					time.Sleep(2 * time.Second)
-					continue
+					l.Error("exactdb_build_error", "err", err)
 				}
+			} else {
+				l.Debug("exactdb_skip", "reason", "no_overrides")
+			}
+			lang := os.Getenv("IPIP_LANG")
+			if lang == "" {
+				lang = "zh-CN"
+			}
+			if iptree2, err := localdb.NewIPIPCache(ipipPath, lang); err == nil {
+				iptree = iptree2
+				l.Info("ipiptree_ready")
+			} else {
+				l.Error("ipiptree_error", "err", err)
+			}
+			if exact != nil || iptree != nil {
+				mc = localdb.NewMultiCache(exact, iptree)
+				dcache.Set(mc)
+				l.Info("filecache_ready")
+				l.Debug("cache_stack", "exact", exact != nil, "tree", iptree != nil)
 				break
 			}
 			time.Sleep(2 * time.Second)

@@ -1,22 +1,23 @@
+// 包 localdb：DEPRECATED 范围内存缓存（保留以兼容旧逻辑，不参与新查询路径）
 package localdb
 
 import (
-    "database/sql"
-    "ip-api/internal/logger"
-    "net"
-    "sort"
+	"database/sql"
+	"ip-api/internal/logger"
+	"net"
+	"sort"
 )
 
 type Location struct{ Country, Region, Province, City, ISP string }
 type Range struct {
-    Start uint32
-    End   uint32
-    LocID int
+	Start uint32
+	End   uint32
+	LocID int
 }
 
 type Cache struct {
-    idx  [256][]Range
-    locs []Location
+	idx  [256][]Range
+	locs []Location
 }
 
 // 文档注释：内存压缩范围缓存
@@ -27,12 +28,12 @@ type Cache struct {
 // 背景：一次性拉取地点与范围，并按首字节分桶与排序；用于高 QPS 本地查询路径，规避频繁数据库访问。
 // 返回：构建好的 Cache；异常包含数据库查询失败与扫描错误。
 func BuildFromDB(db *sql.DB) (*Cache, error) {
-    logger.L().Debug("memcache_build_begin")
-    c := &Cache{}
-    rows, err := db.Query("SELECT id, country, region, province, city, isp FROM _ip_locations")
-    if err != nil {
-        return nil, err
-    }
+	logger.L().Debug("memcache_build_begin")
+	c := &Cache{}
+	rows, err := db.Query("SELECT id, country, region, province, city, isp FROM _ip_locations")
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var maxID int
 	for rows.Next() {
@@ -46,10 +47,10 @@ func BuildFromDB(db *sql.DB) (*Cache, error) {
 		}
 		c.locs = append(c.locs, l)
 	}
-    rrows, err := db.Query("SELECT start_int, end_int, first_octet, location_id FROM _ip_ipv4_ranges ORDER BY first_octet, start_int")
-    if err != nil {
-        return nil, err
-    }
+	rrows, err := db.Query("SELECT start_int, end_int, first_octet, location_id FROM _ip_ipv4_ranges ORDER BY first_octet, start_int")
+	if err != nil {
+		return nil, err
+	}
 	defer rrows.Close()
 	for rrows.Next() {
 		var s, e int64
@@ -59,11 +60,11 @@ func BuildFromDB(db *sql.DB) (*Cache, error) {
 		}
 		c.idx[a] = append(c.idx[a], Range{Start: uint32(s), End: uint32(e), LocID: lid})
 	}
-    for i := 0; i < 256; i++ {
-        sort.Slice(c.idx[i], func(p, q int) bool { return c.idx[i][p].Start < c.idx[i][q].Start })
-    }
-    logger.L().Debug("memcache_build_done", "locations", len(c.locs))
-    return c, nil
+	for i := 0; i < 256; i++ {
+		sort.Slice(c.idx[i], func(p, q int) bool { return c.idx[i][p].Start < c.idx[i][q].Start })
+	}
+	logger.L().Debug("memcache_build_done", "locations", len(c.locs))
+	return c, nil
 }
 
 // 文档注释：IPv4 查找

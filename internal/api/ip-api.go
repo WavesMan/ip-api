@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"hash/fnv"
+	"ip-api/internal/ingest"
 	"ip-api/internal/localdb"
 	"ip-api/internal/logger"
 	"ip-api/internal/store"
@@ -243,6 +244,7 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 			l.Debug("cache_miss", "key", "ip:"+ip)
 		}
 		// 背景：优先使用本地压缩内存缓存快速读取（IPv4）；失败回退数据库
+		tFileBegin := time.Now()
 		if cache != nil && ip != "" && !isIPv6 {
 			if l, ok := cache.Lookup(ip); ok {
 				res.Country = l.Country
@@ -251,10 +253,19 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 				res.City = l.City
 				res.ISP = l.ISP
 				logger.L().Debug("localdb_hit")
+				w.Header().Set("x-step-ms-file", strconv.FormatInt(time.Since(tFileBegin).Milliseconds(), 10))
 				if rc != nil {
 					b, _ := json.Marshal(res)
 					rc.Set(ctx, "ip:"+ip, string(b), time.Hour*24)
 				}
+				go func() {
+					if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+						v := p.To4()
+						ipInt := uint32(v[0])<<24 | uint32(v[1])<<16 | uint32(v[2])<<8 | uint32(v[3])
+						logger.L().Debug("lazy_exact_persist", "ip", ip)
+						_ = ingest.WriteExact(ctx, st.DB(), ipInt, ingest.Location{Country: l.Country, Region: l.Region, Province: l.Province, City: l.City, ISP: l.ISP}, "filecache")
+					}
+				}()
 				if added {
 					_ = st.IncrStats(ctx, ip)
 				}
@@ -268,6 +279,7 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 		// 背景：数据库范围回退（仅 IPv4）；保障 mmdb 不足或缺席情况下仍可服务
 		// 约束：命中后同样写入缓存与统计
 		if !isIPv6 && ip != "" {
+			tDBBegin := time.Now()
 			loc, _ := st.LookupIP(ctx, ip)
 			if loc != nil {
 				logger.L().Debug("db_range_hit")
@@ -276,6 +288,7 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 				res.Province = loc.Province
 				res.City = loc.City
 				res.ISP = loc.ISP
+				w.Header().Set("x-step-ms-db", strconv.FormatInt(time.Since(tDBBegin).Milliseconds(), 10))
 				if rc != nil {
 					b, _ := json.Marshal(res)
 					rc.Set(ctx, "ip:"+ip, string(b), time.Hour*24)
