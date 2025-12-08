@@ -27,10 +27,14 @@ RUN go mod download
 
 # 复制后端源码并构建静态二进制
 COPY . .
+COPY .git .git
 ARG GIT_SHA=dev
 ARG BUILD_TIME=
-RUN go clean -cache -modcache -testcache || true && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-X ip-api/internal/version.Commit=$GIT_SHA -X ip-api/internal/version.BuiltAt=$BUILD_TIME" -o /out/ip-api ./cmd/main.go
+RUN apk add --no-cache git && \
+    GIT_SHA2=$(git rev-parse --short HEAD 2>/dev/null || echo ${GIT_SHA:-dev}) && \
+    BUILD_TIME2=$(git log -1 --pretty=%cI 2>/dev/null || echo ${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}) && \
+    go clean -cache -modcache -testcache || true && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-X ip-api/internal/version.Commit=$GIT_SHA2 -X ip-api/internal/version.BuiltAt=$BUILD_TIME2" -o /out/ip-api ./cmd/main.go
 
 
 # ---------- 运行时镜像 ----------
