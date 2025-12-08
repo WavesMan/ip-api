@@ -8,7 +8,8 @@ WORKDIR /app/ui
 COPY ui/package.json ./
 
 # 优先使用 ci，如无锁文件则回退 install
-RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+RUN npm cache clean --force || true && rm -rf ~/.npm/_cacache || true && \
+    if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
 # 复制前端源码并构建产物
 COPY ui/ .
@@ -26,7 +27,10 @@ RUN go mod download
 
 # 复制后端源码并构建静态二进制
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /out/ip-api ./cmd/main.go
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+RUN go clean -cache -modcache -testcache || true && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-X ip-api/internal/version.Commit=$GIT_SHA -X ip-api/internal/version.BuiltAt=$BUILD_TIME" -o /out/ip-api ./cmd/main.go
 
 
 # ---------- 运行时镜像 ----------

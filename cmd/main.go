@@ -10,6 +10,7 @@ import (
 	"ip-api/internal/migrate"
 	"ip-api/internal/store"
 	"ip-api/internal/utils"
+	"ip-api/internal/version"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -192,6 +193,8 @@ func main() {
 		_, _ = w.Write([]byte("window.__DATA_SOURCE__='IPIP 数据库'"))
 		_, _ = w.Write([]byte("\n"))
 		_, _ = w.Write([]byte("window.__DATA_SOURCE_URL__='https://www.ipip.net'"))
+		_, _ = w.Write([]byte("\n"))
+		_, _ = w.Write([]byte("window.__COMMIT_SHA__='" + version.Commit + "'"))
 	})
 
 	addr := os.Getenv("ADDR")

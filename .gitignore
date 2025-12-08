@@ -17,6 +17,7 @@ data/*.xdb
 data/*.xdb.*
 data/*.mmdb
 data/localdb/
+main.exe
 
 .env
 .env.*

@@ -53,6 +53,20 @@ onMounted(() => {
 const dataSourceName = ref(typeof window !== 'undefined' ? (window.__DATA_SOURCE__ || 'MaxMind GeoIP') : 'MaxMind GeoIP')
 const dataSourceUrl = ref(typeof window !== 'undefined' ? (window.__DATA_SOURCE_URL__ || 'https://www.maxmind.com') : 'https://www.maxmind.com')
 
+const commitSha = ref(typeof window !== 'undefined' ? (window.__COMMIT_SHA__ || 'dev') : 'dev')
+const builtAt = ref('')
+async function fetchVersion() {
+  try {
+    const base = window.__API_BASE__ || '/api'
+    const res = await fetch(`${base}/version`)
+    if (!res.ok) return
+    const data = await res.json()
+    if (data && data.commit) commitSha.value = data.commit
+    if (data && data.builtAt) builtAt.value = data.builtAt
+  } catch {}
+}
+onMounted(() => { fetchVersion() })
+
 async function onSearch() {
   if (!queryIp.value) return
   loading.value = true
@@ -89,7 +103,7 @@ async function onSearch() {
             <li><a href="#" @click.prevent="goto('docs')" :class="activePage==='docs'?'text-blue-500':''" class="hover:text-blue-500 transition-colors">接口说明</a></li>
             <li><a href="https://home.waveyo.cn" target="_blank" class="hover:text-blue-500 transition-colors">WaveYo Home</a></li>
             <li><a href="https://blog.waveyo.cn" target="_blank" class="hover:text-blue-500 transition-colors">WaveYo Blog</a></li>
-            <li><a href="https://github.com/WavesMan/ip-api" target="_blank" class="hover:text-blue-500 transition-colors">GitHub</a></li>
+            <li><a href="https://github.com/WavesMan" target="_blank" class="hover:text-blue-500 transition-colors">GitHub</a></li>
           </ul>
         </nav>
       </div>
@@ -100,7 +114,7 @@ async function onSearch() {
       
       <div class="text-center mb-12">
         <h1 class="text-4xl md:text-5xl font-bold mb-4 bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent">
-          极速、精准、离线
+          极速、精准
         </h1>
         <p class="text-xl text-gray-400 mb-8">
           基于 Go 后端与数据库的 IP 归属地查询服务
@@ -217,15 +231,20 @@ async function onSearch() {
     <DocsPage v-if="activePage==='docs'" />
 
     
-    <footer class="border-t border-gray-700 py-8 text-center text-gray-500">
-      <p>
-        <a href="https://beian.miit.gov.cn/" target="_blank" class="hover:text-blue-400 transition-colors duration-200">皖ICP备2025078205号</a>&nbsp;&nbsp;
-        <a href="https://beian.mps.gov.cn/#/query/webSearch?code=" rel="noreferrer" target="_blank" class="hover:text-blue-400 transition-colors duration-200">皖公网安备34040002000514号</a>
-      </p>
-      <p>&copy; {{ new Date().getFullYear() }} WaveYo.  
-        <a href="https://www.rainyun.com/WaveYo_" target="_blank" class="hover:text-blue-400 transition-colors duration-200">雨云提供计算支持</a> | 
-        EdgeOne提供CDN支持
-      </p>
+    <footer class="border-t border-gray-700 py-8 text-gray-500">
+      <div class="container mx-auto px-4">
+        <div class="flex justify-between items-center">
+          <p>&copy; {{ new Date().getFullYear() }} WaveYo.  
+            <a href="https://www.rainyun.com/WaveYo_" target="_blank" class="hover:text-blue-400 transition-colors duration-200">雨云提供计算支持</a> | 
+            EdgeOne提供CDN支持
+          </p>
+          <p>
+            <a href="https://beian.miit.gov.cn/" target="_blank" class="hover:text-blue-400 transition-colors duration-200">皖ICP备2025078205号</a>&nbsp;&nbsp;
+            <a href="https://beian.mps.gov.cn/#/query/webSearch?code=" rel="noreferrer" target="_blank" class="hover:text-blue-400 transition-colors duration-200">皖公网安备34040002000514号</a>
+          </p>
+        </div>
+        <p class="mt-2 text-xs text-gray-400 font-mono">Commit: {{ commitSha }} <span v-if="builtAt">| BuiltAt: {{ builtAt }}</span></p>
+      </div>
     </footer>
   </div>
 </template>

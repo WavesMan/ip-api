@@ -10,6 +10,7 @@ import (
 	"ip-api/internal/localdb"
 	"ip-api/internal/logger"
 	"ip-api/internal/store"
+	"ip-api/internal/version"
 	"net"
 	"net/http"
 	"os"
@@ -195,6 +196,12 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 	Lookup(string) (localdb.Location, bool)
 }) *http.ServeMux {
 	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		m := map[string]any{"commit": version.Commit, "builtAt": version.BuiltAt}
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		w.Header().Set("cache-control", "no-store")
+		_ = json.NewEncoder(w).Encode(m)
+	})
 	apiMux.HandleFunc("/ip", func(w http.ResponseWriter, r *http.Request) {
 		l := logger.L()
 		ctx := r.Context()
@@ -208,6 +215,12 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 		if s := os.Getenv("DEDUP_TTL_SECONDS"); s != "" {
 			if n, e := strconv.Atoi(s); e == nil && n > 0 {
 				ttlSec = n
+			}
+		}
+		cacheSec := 600
+		if s := os.Getenv("CACHE_TTL_SECONDS"); s != "" {
+			if n, e := strconv.Atoi(s); e == nil && n > 0 {
+				cacheSec = n
 			}
 		}
 		bucket := time.Now().Unix() / int64(ttlSec)
@@ -255,8 +268,13 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 				logger.L().Debug("localdb_hit")
 				w.Header().Set("x-step-ms-file", strconv.FormatInt(time.Since(tFileBegin).Milliseconds(), 10))
 				if rc != nil {
-					b, _ := json.Marshal(res)
-					rc.Set(ctx, "ip:"+ip, string(b), time.Hour*24)
+					if res.Country != "" || res.Region != "" || res.Province != "" || res.City != "" || res.ISP != "" {
+						b, _ := json.Marshal(res)
+						_ = rc.Set(ctx, "ip:"+ip, string(b), time.Duration(cacheSec)*time.Second).Err()
+						logger.L().Debug("cache_set", "key", "ip:"+ip, "len", len(b), "ttl_s", cacheSec)
+					} else {
+						logger.L().Debug("cache_skip_empty", "key", "ip:"+ip)
+					}
 				}
 				go func() {
 					if p := net.ParseIP(ip); p != nil && p.To4() != nil {
@@ -290,8 +308,13 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 				res.ISP = loc.ISP
 				w.Header().Set("x-step-ms-db", strconv.FormatInt(time.Since(tDBBegin).Milliseconds(), 10))
 				if rc != nil {
-					b, _ := json.Marshal(res)
-					rc.Set(ctx, "ip:"+ip, string(b), time.Hour*24)
+					if res.Country != "" || res.Region != "" || res.Province != "" || res.City != "" || res.ISP != "" {
+						b, _ := json.Marshal(res)
+						_ = rc.Set(ctx, "ip:"+ip, string(b), time.Duration(cacheSec)*time.Second).Err()
+						logger.L().Debug("cache_set", "key", "ip:"+ip, "len", len(b), "ttl_s", cacheSec)
+					} else {
+						logger.L().Debug("cache_skip_empty", "key", "ip:"+ip)
+					}
 				}
 				if added {
 					_ = st.IncrStats(ctx, ip)
