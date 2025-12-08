@@ -11,10 +11,16 @@ node_modules
 dist
 dist-ssr
 *.local
+Koishi*/
 public/db/
+data/*.xdb
+data/*.xdb.*
+data/*.mmdb
+data/localdb/
 
 .env
 .env.*
+!.env.example
 deploy
 edge-functions/dict.js
 edge-functions/chunks/
