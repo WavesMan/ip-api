@@ -59,24 +59,27 @@ func ipToInt(ip string) (uint32, error) {
 
 // LookupIP: 查询单个 IPv4 的归属地，先按首段定位分区，再在范围内匹配
 func (s *Store) LookupIP(ctx context.Context, ip string) (*Location, error) {
-	val, err := ipToInt(ip)
-	if err != nil {
-		return nil, nil
-	}
-	a := int((val >> 24) & 0xff)
-	logger.L().Debug("db_lookup_begin", "ip", ip, "val", int64(val), "octet", a)
-	row := s.db.QueryRowContext(ctx, "SELECT location_id FROM _ip_ipv4_ranges WHERE first_octet=$1 AND start_int<=$2 AND end_int>=$2 ORDER BY start_int DESC LIMIT 1", a, int64(val))
-	var locID int
-	if err := row.Scan(&locID); err != nil {
-		return nil, nil
-	}
-	row2 := s.db.QueryRowContext(ctx, "SELECT country, region, province, city, isp FROM _ip_locations WHERE id=$1", locID)
-	var l Location
-	if err := row2.Scan(&l.Country, &l.Region, &l.Province, &l.City, &l.ISP); err != nil {
-		return nil, nil
-	}
-	logger.L().Debug("db_lookup_done", "loc_id", locID, "country", l.Country, "region", l.Region, "province", l.Province, "city", l.City)
-	return &l, nil
+    val, err := ipToInt(ip)
+    if err != nil {
+        return nil, nil
+    }
+    a := int((val >> 24) & 0xff)
+    logger.L().Debug("db_lookup_begin", "ip", ip, "val", int64(val), "octet", a)
+    row := s.db.QueryRowContext(ctx, "SELECT location_id FROM _ip_overrides WHERE ip_int=$1 LIMIT 1", int64(val))
+    var locID int
+    if err := row.Scan(&locID); err != nil {
+        row2 := s.db.QueryRowContext(ctx, "SELECT location_id FROM _ip_ipv4_ranges WHERE first_octet=$1 AND start_int<=$2 AND end_int>=$2 ORDER BY (end_int - start_int) ASC, start_int DESC LIMIT 1", a, int64(val))
+        if err := row2.Scan(&locID); err != nil {
+            return nil, nil
+        }
+    }
+    row2 := s.db.QueryRowContext(ctx, "SELECT country, region, province, city, isp FROM _ip_locations WHERE id=$1", locID)
+    var l Location
+    if err := row2.Scan(&l.Country, &l.Region, &l.Province, &l.City, &l.ISP); err != nil {
+        return nil, nil
+    }
+    logger.L().Debug("db_lookup_done", "loc_id", locID, "country", l.Country, "region", l.Region, "province", l.Province, "city", l.City)
+    return &l, nil
 }
 
 // IncrStats: 成功查询后递增总计与当日计数；访客存在时递增访客计数

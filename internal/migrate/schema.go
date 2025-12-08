@@ -30,14 +30,18 @@ func EnsureSchema(db *sql.DB) error {
             total_queries BIGINT NOT NULL DEFAULT 0,
             total_visitors BIGINT NOT NULL DEFAULT 0
         )`,
-		`CREATE TABLE IF NOT EXISTS _ip_stats_daily (
+        `CREATE TABLE IF NOT EXISTS _ip_stats_daily (
             day DATE PRIMARY KEY,
             queries BIGINT NOT NULL DEFAULT 0,
             visitors BIGINT NOT NULL DEFAULT 0
         )`,
-		`INSERT INTO _ip_stats_total(id, total_queries, total_visitors)
+        `INSERT INTO _ip_stats_total(id, total_queries, total_visitors)
          VALUES(1, 0, 0)
          ON CONFLICT (id) DO NOTHING`,
+        `CREATE TABLE IF NOT EXISTS _ip_overrides (
+            ip_int BIGINT PRIMARY KEY,
+            location_id INT NOT NULL REFERENCES _ip_locations(id)
+        )`,
     }
     for i, s := range stmts {
         logger.L().Debug("schema_exec", "idx", i)
