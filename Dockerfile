@@ -43,6 +43,8 @@ COPY --from=ui-builder /app/ui/dist /app/ui/dist
 
 # 预创建数据目录（本地文件缓存与 IPIP 数据位置），建议挂载为持久卷
 RUN mkdir -p /app/data/localdb /app/data/ipip
+COPY data/ipip/ipipfree.ipdb /app/data/ipip/ipipfree.ipdb
+RUN chown -R appuser:appuser /app
 
 # 默认环境变量（可在运行时覆盖）
 ENV ADDR=:8080 \
@@ -55,4 +57,3 @@ EXPOSE 8080
 # 切换非特权用户并启动
 USER appuser
 CMD ["/app/ip-api"]
-
