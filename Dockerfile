@@ -43,6 +43,7 @@ COPY --from=ui-builder /app/ui/dist /app/ui/dist
 
 # 预创建数据目录（本地文件缓存与 IPIP 数据位置），建议挂载为持久卷
 RUN mkdir -p /app/data/localdb /app/data/ipip
+RUN chown -R appuser:appuser /app/data
 COPY data/ipip/ipipfree.ipdb /app/data/ipip/ipipfree.ipdb
 RUN chown -R appuser:appuser /app
 
