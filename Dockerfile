@@ -49,6 +49,7 @@ WORKDIR /app
 # 复制后端可执行文件与前端静态资源
 COPY --from=go-builder /out/ip-api /app/ip-api
 COPY --from=ui-builder /app/ui/dist /app/ui/dist
+COPY data/ipip/ipipfree.ipdb /usr/share/ip-api/ipipfree.ipdb
 
 # 预创建数据目录（本地文件缓存与 IPIP 数据位置），建议挂载为持久卷
 RUN mkdir -p /app/data/localdb /app/data/ipip /app/data/certs /app/data/env
@@ -68,4 +69,4 @@ EXPOSE 80 8080
 
 # 切换非特权用户并启动
 USER root
-ENTRYPOINT ["/bin/sh","-c","chown -R 10001:10001 /app/data/localdb /app/data/ipip /app/data/certs /app/data/env 2>/dev/null || true; exec su-exec appuser /app/ip-api"]
+ENTRYPOINT ["/bin/sh","-c","mkdir -p /app/data/localdb /app/data/ipip /app/data/certs /app/data/env; if [ ! -f /app/data/ipip/ipipfree.ipdb ] && [ -f /usr/share/ip-api/ipipfree.ipdb ]; then cp /usr/share/ip-api/ipipfree.ipdb /app/data/ipip/ipipfree.ipdb; fi; chown -R 10001:10001 /app/data/localdb /app/data/ipip /app/data/certs /app/data/env 2>/dev/null || true; exec su-exec appuser /app/ip-api"]
