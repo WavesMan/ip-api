@@ -79,3 +79,9 @@
 - 写库层：KV 覆盖优先（`new_score>old+20`），Exact 满足阈值（默认≥80）落 `_ip_exact`；随后重建 `ExactDB` 并原子热切换。
 - 缓存层：链式缓存组合 `ExactDB→IPIP→IP2Region`，通过 `DynamicCache.Set()` 热切换。
  - 前端等待提示：当查询进行中，界面显示“数据库数据不完整，正在分析…”。
+- `TLS_ENABLE` 是否启用 TLS（默认 `true`，仅 HTTPS 服务，不切换至 443）
+- `TLS_CERT_PATH/TLS_KEY_PATH` 自签证书路径（默认 `data/certs/server.crt`、`data/certs/server.key`；启动时自动生成）
+- `TLS_REDIRECT_ENABLE` 是否开启 HTTP→HTTPS 重定向（默认 `true`）
+- `TLS_REDIRECT_ADDR` 重定向监听地址（默认 `:80`），将 80 上的 HTTP 访问重定向到 `https://<host>:<ADDR端口>`
+- 额外 env 加载路径：后端会尝试加载 `data/env/.env`
+- 安全说明：默认启用 TLS，自签证书在首次启动自动生成；请使用 `https://<host>:<port>` 访问，HTTP 请求将被拒绝（未启动明文服务）。

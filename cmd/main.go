@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -313,6 +314,50 @@ func main() {
 	handler := logger.AccessMiddleware(l)(mux)
 	handler = middleware.Wrap(handler)
 	s := &http.Server{Addr: addr, Handler: handler}
+	tlsEnable := os.Getenv("TLS_ENABLE")
+	if tlsEnable == "" || tlsEnable == "true" {
+		certPath := os.Getenv("TLS_CERT_PATH")
+		keyPath := os.Getenv("TLS_KEY_PATH")
+		if certPath == "" {
+			certPath = filepath.Join("data", "certs", "server.crt")
+		}
+		if keyPath == "" {
+			keyPath = filepath.Join("data", "certs", "server.key")
+		}
+		_ = utils.EnsureSelfSignedCert(certPath, keyPath, "ip-api.local")
+		// 可选：启动HTTP重定向到HTTPS（不改变HTTPS运行端口）
+		if os.Getenv("TLS_REDIRECT_ENABLE") == "true" {
+			redirAddr := os.Getenv("TLS_REDIRECT_ADDR")
+			if redirAddr == "" {
+				redirAddr = ":80"
+			}
+			go func() {
+				httpRedir := http.NewServeMux()
+				httpRedir.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+					host := r.Host
+					// 替换目标端口为HTTPS服务端口
+					httpsPort := strings.TrimPrefix(addr, ":")
+					baseHost := host
+					if i := strings.LastIndex(host, ":"); i != -1 {
+						baseHost = host[:i]
+					}
+					targetHost := baseHost
+					if httpsPort != "" {
+						targetHost = baseHost + ":" + httpsPort
+					}
+					target := "https://" + targetHost + r.URL.RequestURI()
+					http.StatusText(http.StatusMovedPermanently)
+					http.Redirect(w, r, target, http.StatusMovedPermanently)
+					l.Debug("http_redirect", "from", r.Host, "to", target)
+				})
+				l.Info("http_redirect_listening", "addr", redirAddr, "to", "https"+addr)
+				_ = http.ListenAndServe(redirAddr, logger.AccessMiddleware(l)(httpRedir))
+			}()
+		}
+		l.Info("listening_tls", "addr", addr, "cert", certPath)
+		_ = s.ListenAndServeTLS(certPath, keyPath)
+		return
+	}
 	l.Info("listening", "addr", addr)
 	_ = s.ListenAndServe()
 }
