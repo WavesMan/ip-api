@@ -30,8 +30,8 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load(".env")
 	_ = godotenv.Load(filepath.Join("data", "env", ".env"))
+	_ = godotenv.Load(".env")
 	// 日志初始化
 	l := logger.Setup()
 	l.Debug("log_init_ok")

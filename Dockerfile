@@ -51,7 +51,7 @@ COPY --from=go-builder /out/ip-api /app/ip-api
 COPY --from=ui-builder /app/ui/dist /app/ui/dist
 
 # 预创建数据目录（本地文件缓存与 IPIP 数据位置），建议挂载为持久卷
-RUN mkdir -p /app/data/localdb /app/data/ipip /app/data/certs
+RUN mkdir -p /app/data/localdb /app/data/ipip /app/data/certs /app/data/env
 RUN chown -R appuser:appuser /app/data
 COPY data/ipip/ipipfree.ipdb /app/data/ipip/ipipfree.ipdb
 RUN chown -R appuser:appuser /app
@@ -68,4 +68,4 @@ EXPOSE 80 8080
 
 # 切换非特权用户并启动
 USER root
-ENTRYPOINT ["/bin/sh","-c","chown -R 10001:10001 /app/data/localdb /app/data/ipip /app/data/certs 2>/dev/null || true; exec su-exec appuser /app/ip-api"]
+ENTRYPOINT ["/bin/sh","-c","chown -R 10001:10001 /app/data/localdb /app/data/ipip /app/data/certs /app/data/env 2>/dev/null || true; exec su-exec appuser /app/ip-api"]
