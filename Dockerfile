@@ -42,7 +42,7 @@ FROM alpine:3.20
 
 # 创建非特权用户
 RUN adduser -D -H -u 10001 appuser
-RUN apk add --no-cache su-exec
+RUN apk add --no-cache su-exec ca-certificates libcap-utils && update-ca-certificates
 
 WORKDIR /app
 
@@ -55,14 +55,18 @@ RUN mkdir -p /app/data/localdb /app/data/ipip
 RUN chown -R appuser:appuser /app/data
 COPY data/ipip/ipipfree.ipdb /app/data/ipip/ipipfree.ipdb
 RUN chown -R appuser:appuser /app
+RUN setcap 'cap_net_bind_service=+ep' /app/ip-api || true
 
 # 默认环境变量（可在运行时覆盖）
 ENV ADDR=:8080 \
     API_BASE=/api \
-    UI_DIST=/app/ui/dist
+    UI_DIST=/app/ui/dist \
+    TLS_ENABLE=true \
+    TLS_CERT_PATH=/app/data/certs/server.crt \
+    TLS_KEY_PATH=/app/data/certs/server.key
 
 # 对外暴露端口
-EXPOSE 8080
+EXPOSE 80 8080
 
 # 切换非特权用户并启动
 USER root
