@@ -51,7 +51,7 @@ COPY --from=go-builder /out/ip-api /app/ip-api
 COPY --from=ui-builder /app/ui/dist /app/ui/dist
 
 # 预创建数据目录（本地文件缓存与 IPIP 数据位置），建议挂载为持久卷
-RUN mkdir -p /app/data/localdb /app/data/ipip
+RUN mkdir -p /app/data/localdb /app/data/ipip /app/data/certs
 RUN chown -R appuser:appuser /app/data
 COPY data/ipip/ipipfree.ipdb /app/data/ipip/ipipfree.ipdb
 RUN chown -R appuser:appuser /app
@@ -61,13 +61,11 @@ RUN setcap 'cap_net_bind_service=+ep' /app/ip-api || true
 ENV ADDR=:8080 \
     API_BASE=/api \
     UI_DIST=/app/ui/dist \
-    TLS_ENABLE=true \
-    TLS_CERT_PATH=/app/data/certs/server.crt \
-    TLS_KEY_PATH=/app/data/certs/server.key
+    TLS_ENABLE=true
 
 # 对外暴露端口
 EXPOSE 80 8080
 
 # 切换非特权用户并启动
 USER root
-ENTRYPOINT ["/bin/sh","-c","chown -R 10001:10001 /app/data/localdb /app/data/ipip 2>/dev/null || true; exec su-exec appuser /app/ip-api"]
+ENTRYPOINT ["/bin/sh","-c","chown -R 10001:10001 /app/data/localdb /app/data/ipip /app/data/certs 2>/dev/null || true; exec su-exec appuser /app/ip-api"]
