@@ -2,11 +2,12 @@
 package store
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"fmt"
-	"ip-api/internal/logger"
+    "context"
+    "database/sql"
+    "errors"
+    "fmt"
+    "ip-api/internal/logger"
+    "ip-api/internal/ingest"
 
 	_ "github.com/lib/pq"
 )
@@ -137,4 +138,71 @@ func (s *Store) GetTotals(ctx context.Context) (*Totals, error) {
 	_ = row2.Scan(&t.Today)
 	logger.L().Debug("stats_totals", "total", t.Total, "today", t.Today)
 	return &t, nil
+}
+
+// 文档注释：记录最近查询的 IP（去重累加）
+// 背景：作为离线采集候选来源，保留最近访问的 IP 及次数与时间；不影响主查询逻辑。
+// 约束：非法 IP 静默跳过；仅更新 last_seen 与计数。
+func (s *Store) RecordRecent(ctx context.Context, ip string) error {
+	val, err := ipToInt(ip)
+	if err != nil {
+		return nil
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO _ip_recent_ips(ip_int, last_seen, queries)
+        VALUES($1, now(), 1)
+        ON CONFLICT (ip_int) DO UPDATE SET last_seen=now(), queries=_ip_recent_ips.queries+1`, int64(val))
+	return nil
+}
+
+// 文档注释：获取数据库“待校准候选 IP”列表
+// 背景：从最近查询集合中筛选未被覆盖/未精确命中的 IP，按最近访问排序返回指定数量。
+// 参数：hours 为最近窗口小时数，limit 为最大返回数量。
+// 返回：IPv4 文本列表；异常时返回 error。
+func (s *Store) FetchRecentCandidates(ctx context.Context, hours int, limit int) ([]string, error) {
+	if hours <= 0 {
+		hours = 24
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT r.ip_int
+        FROM _ip_recent_ips r
+        LEFT JOIN _ip_overrides_kv k ON k.ip_int = r.ip_int
+        LEFT JOIN _ip_exact e ON e.ip_int = r.ip_int
+        WHERE r.last_seen >= now() - make_interval(hours => $1)
+          AND k.ip_int IS NULL
+          AND e.ip_int IS NULL
+        ORDER BY r.last_seen DESC
+        LIMIT $2`, hours, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		a := (v >> 24) & 0xff
+		b := (v >> 16) & 0xff
+		c := (v >> 8) & 0xff
+		d := v & 0xff
+		ip := fmt.Sprintf("%d.%d.%d.%d", a, b, c, d)
+		out = append(out, ip)
+	}
+	return out, nil
+}
+
+func (s *Store) UpsertOverrideKV(ctx context.Context, assocKey string, ip string, l ingest.Location, score float64, confidence float64) error {
+    val, err := ipToInt(ip)
+    if err != nil { return err }
+    _, err = s.db.ExecContext(ctx, `INSERT INTO _ip_overrides_kv(assoc_key, ip_int, country, region, province, city, isp, score, confidence)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        ON CONFLICT (assoc_key, ip_int) DO UPDATE SET country=EXCLUDED.country, region=EXCLUDED.region, province=EXCLUDED.province, city=EXCLUDED.city, isp=EXCLUDED.isp, score=EXCLUDED.score, confidence=EXCLUDED.confidence, updated_at=now()
+        WHERE COALESCE(_ip_overrides_kv.score, 0) + 20 <= EXCLUDED.score`,
+        assocKey, int64(val), l.Country, l.Region, l.Province, l.City, l.ISP, score, confidence,
+    )
+    return err
 }

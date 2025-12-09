@@ -118,7 +118,7 @@ async function onSearch() {
         <div class="absolute top-0 right-0 p-2 opacity-10"><i class="fas fa-search text-6xl"></i></div>
         <div class="flex justify-between items-start mb-4 relative z-10">
           <div class="flex-1 min-w-0">
-            <h3 class="text-xl font-bold" :class="loading ? 'text-blue-400' : 'text-green-400'">{{ loading ? '查询中…' : '查询结果' }}</h3>
+            <h3 class="text-xl font-bold" :class="loading ? 'text-blue-400' : 'text-green-400'">{{ loading ? '数据库数据不完整，正在分析…' : '查询结果' }}</h3>
             <p class="text-xs text-gray-500 font-mono mt-1 truncate">{{ (searchResult && searchResult.ip) || (loading ? queryIp : '') }}</p>
           </div>
           <div class="bg-gray-800 text-xs px-2 py-1 rounded text-gray-400 whitespace-nowrap ml-2">Result</div>
@@ -144,11 +144,10 @@ async function onSearch() {
         <div class="flex justify-between items-center pt-4 border-t border-gray-700 mt-auto text-sm text-gray-500 relative z-10">
           <div class="flex items-center gap-2">
             <i :class="loading ? 'fas fa-spinner fa-spin text-blue-500' : 'fas fa-check-circle text-green-500'"></i>
-            <span>{{ loading ? '查询中…' : '查询成功' }}</span>
+            <span>{{ loading ? '数据库数据不完整，正在分析…' : '查询成功' }}</span>
           </div>
         </div>
       </div>
     </div>
   </main>
 </template>
-

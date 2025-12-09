@@ -17,9 +17,9 @@ data/*.xdb
 data/*.xdb.*
 data/*.mmdb
 data/localdb/
-main.exe
+*.exe
 
-.env
+.env*
 .env.*
 !.env.example
 deploy

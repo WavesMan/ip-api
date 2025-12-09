@@ -4,11 +4,19 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"hash/fnv"
+	"ip-api/internal/fusion"
 	"ip-api/internal/ingest"
 	"ip-api/internal/localdb"
+	"ip-api/internal/localdb/chain"
+	"ip-api/internal/localdb/exact"
+	ip2region "ip-api/internal/localdb/ip2region"
+	ipipcache "ip-api/internal/localdb/ipip"
 	"ip-api/internal/logger"
+	"ip-api/internal/metrics"
+	"ip-api/internal/plugins"
 	"ip-api/internal/store"
 	"ip-api/internal/version"
 	"net"
@@ -192,9 +200,14 @@ func bloomCheckAndSet(ctx context.Context, rc *redis.Client, key string, positio
 // - 缓存键命名固定前缀（ip:），便于统一清理；
 // - IPv6 目前仅透传 IP，不参与本地范围匹配。
 // WARNING: 代理头可能被伪造，部署时需结合可信代理列表或网关过滤，避免滥用导致去重与统计偏差。
-func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
-	Lookup(string) (localdb.Location, bool)
-}) *http.ServeMux {
+// 文档注释：构建并返回 API 路由（插件融合版）
+// 背景：引入插件管理器与动态缓存热切换；在缓存与数据库回退不足时并发调用插件，融合后按策略写库并触发重建。
+// 参数：
+// - st：数据库访问入口；用于 KV 优先与范围回退，以及写入与统计；
+// - rc：Redis 客户端（可选）；用于热点缓存与布隆去重；
+// - dc：动态缓存（支持 Lookup/Set）；用于链式缓存原子切换；
+// - pm：插件管理器；提供健康插件集合与融合。
+func BuildRoutes(st *store.Store, rc *redis.Client, dc *localdb.DynamicCache, pm *plugins.Manager) *http.ServeMux {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		commit := version.Commit
@@ -213,6 +226,7 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 	apiMux.HandleFunc("/ip", func(w http.ResponseWriter, r *http.Request) {
 		l := logger.L()
 		ctx := r.Context()
+		tBegin := time.Now()
 		ip := r.URL.Query().Get("ip")
 		if ip == "" {
 			ip = getClientIP(r)
@@ -264,6 +278,12 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 				_ = json.NewEncoder(w).Encode(res)
 				if added {
 					_ = st.IncrStats(ctx, ip)
+					_ = st.RecordRecent(ctx, ip)
+				}
+				metrics.RequestsTotal.Inc()
+				metrics.RequestDurationMs.Observe(float64(time.Since(tBegin).Milliseconds()))
+				if res.Country == "" && res.Region == "" && res.Province == "" && res.City == "" && res.ISP == "" {
+					metrics.EmptyResultsTotal.Inc()
 				}
 				return
 			}
@@ -274,21 +294,90 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 			s, _ := rc.Get(ctx, "ip:"+ip).Result()
 			if s != "" {
 				l.Debug("cache_hit", "key", "ip:"+ip)
+				metrics.RedisHitsTotal.Inc()
 				_ = json.Unmarshal([]byte(s), &res)
+				// 命中但字段不完整时可触发融合
+				if os.Getenv("ENABLE_FUSION_ON_PARTIAL_CACHE") == "true" && pm != nil && !isIPv6 {
+					if res.Province == "" || res.City == "" {
+						ctx2, cancel := context.WithTimeout(ctx, 4*time.Second)
+						loc, score, conf, top := pm.Aggregate(ctx2, ip)
+						cancel()
+						if loc.Country != "" || loc.Region != "" || loc.Province != "" || loc.City != "" || loc.ISP != "" {
+							minScore := 20
+							if s := os.Getenv("FUSION_MIN_SCORE_ON_CACHE"); s != "" {
+								if n, e := strconv.Atoi(s); e == nil && n > 0 {
+									minScore = n
+								}
+							}
+							oldComplete := res.Province != "" && res.City != ""
+							newComplete := loc.Province != "" && loc.City != ""
+							if (score >= float64(minScore)) || (!oldComplete && newComplete) || (oldComplete && newComplete) {
+								res.Country = loc.Country
+								res.Region = loc.Region
+								res.Province = loc.Province
+								res.City = loc.City
+								res.ISP = loc.ISP
+								assoc := "global"
+								if top != nil && top.Assoc != "" {
+									assoc = top.Assoc
+								}
+								logger.L().Debug("plugin_fusion_on_cache", "score", score, "conf", conf, "assoc", assoc)
+								_ = st.UpsertOverrideKV(ctx, assoc, ip, ingest.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, score, conf)
+								_, wExact := fusion.DecideWrite(fusion.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, score)
+								if wExact {
+									if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+										v := p.To4()
+										ipInt := uint32(v[0])<<24 | uint32(v[1])<<16 | uint32(v[2])<<8 | uint32(v[3])
+										_ = ingest.WriteExact(ctx, st.DB(), ipInt, ingest.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, assoc)
+										logger.L().Debug("plugin_write_exact", "ip", ip, "assoc", assoc)
+									}
+								}
+								if rc != nil {
+									b, _ := json.Marshal(res)
+									_ = rc.Set(ctx, "ip:"+ip, string(b), time.Duration(cacheSec)*time.Second).Err()
+									logger.L().Debug("cache_set", "key", "ip:"+ip, "len", len(b), "ttl_s", cacheSec)
+								}
+								go func() {
+									fileDir := "data/localdb"
+									if err := exactRebuildAndSwitch(st.DB(), dc, fileDir); err != nil {
+										logger.L().Error("exact_rebuild_switch_error", "err", err)
+									} else {
+										logger.L().Info("exact_rebuild_switch_ok")
+									}
+								}()
+							} else {
+								logger.L().Debug("plugin_fusion_skip_cache", "score", score, "min", minScore, "old_complete", oldComplete, "new_complete", newComplete)
+							}
+						}
+					}
+				}
+				if os.Getenv("ENABLE_FUSION_ON_PARTIAL_CACHE") != "true" && (res.Province == "" || res.City == "") {
+					logger.L().Debug("cache_hit_partial_skip_env_off")
+				}
+				if os.Getenv("ENABLE_FUSION_ON_PARTIAL_CACHE") == "true" && !(res.Province == "" || res.City == "") {
+					logger.L().Debug("cache_hit_partial_skip_complete")
+				}
 				w.Header().Set("content-type", "application/json; charset=utf-8")
 				w.Header().Set("cache-control", "no-store")
 				_ = json.NewEncoder(w).Encode(res)
 				if added {
 					_ = st.IncrStats(ctx, ip)
+					_ = st.RecordRecent(ctx, ip)
+				}
+				metrics.RequestsTotal.Inc()
+				metrics.RequestDurationMs.Observe(float64(time.Since(tBegin).Milliseconds()))
+				if res.Country == "" && res.Region == "" && res.Province == "" && res.City == "" && res.ISP == "" {
+					metrics.EmptyResultsTotal.Inc()
 				}
 				return
 			}
 			l.Debug("cache_miss", "key", "ip:"+ip)
+			metrics.RedisMissesTotal.Inc()
 		}
 		// 背景：优先使用本地压缩内存缓存快速读取（IPv4）；失败回退数据库
 		tFileBegin := time.Now()
-		if cache != nil && ip != "" && !isIPv6 {
-			if l, ok := cache.Lookup(ip); ok {
+		if dc != nil && ip != "" && !isIPv6 {
+			if l, ok := dc.Lookup(ip); ok {
 				res.Country = l.Country
 				res.Region = l.Region
 				res.Province = l.Province
@@ -296,6 +385,66 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 				res.ISP = l.ISP
 				logger.L().Debug("localdb_hit")
 				w.Header().Set("x-step-ms-file", strconv.FormatInt(time.Since(tFileBegin).Milliseconds(), 10))
+				if os.Getenv("ENABLE_FUSION_ON_PARTIAL_CACHE") == "true" && pm != nil {
+					if res.Province == "" || res.City == "" {
+						ctx2, cancel := context.WithTimeout(ctx, 4*time.Second)
+						loc, score, conf, top := pm.Aggregate(ctx2, ip)
+						cancel()
+						if loc.Country != "" || loc.Region != "" || loc.Province != "" || loc.City != "" || loc.ISP != "" {
+							minScore := 20
+							if s := os.Getenv("FUSION_MIN_SCORE_ON_CACHE"); s != "" {
+								if n, e := strconv.Atoi(s); e == nil && n > 0 {
+									minScore = n
+								}
+							}
+							oldComplete := res.Province != "" && res.City != ""
+							newComplete := loc.Province != "" && loc.City != ""
+							if (score >= float64(minScore)) || (!oldComplete && newComplete) || (oldComplete && newComplete) {
+								res.Country = loc.Country
+								res.Region = loc.Region
+								res.Province = loc.Province
+								res.City = loc.City
+								res.ISP = loc.ISP
+								assoc := "global"
+								if top != nil && top.Assoc != "" {
+									assoc = top.Assoc
+								}
+								logger.L().Debug("plugin_fusion_on_localdb", "score", score, "conf", conf, "assoc", assoc)
+								_ = st.UpsertOverrideKV(ctx, assoc, ip, ingest.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, score, conf)
+								_, wExact := fusion.DecideWrite(fusion.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, score)
+								if wExact {
+									if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+										v := p.To4()
+										ipInt := uint32(v[0])<<24 | uint32(v[1])<<16 | uint32(v[2])<<8 | uint32(v[3])
+										_ = ingest.WriteExact(ctx, st.DB(), ipInt, ingest.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, assoc)
+										logger.L().Debug("plugin_write_exact", "ip", ip, "assoc", assoc)
+									}
+								}
+								if os.Getenv("ENABLE_FUSION_ON_PARTIAL_CACHE") != "true" && (res.Province == "" || res.City == "") {
+									logger.L().Debug("localdb_partial_skip_env_off")
+								}
+								if os.Getenv("ENABLE_FUSION_ON_PARTIAL_CACHE") == "true" && !(res.Province == "" || res.City == "") {
+									logger.L().Debug("localdb_partial_skip_complete")
+								}
+								if rc != nil {
+									b, _ := json.Marshal(res)
+									_ = rc.Set(ctx, "ip:"+ip, string(b), time.Duration(cacheSec)*time.Second).Err()
+									logger.L().Debug("cache_set", "key", "ip:"+ip, "len", len(b), "ttl_s", cacheSec)
+								}
+								go func() {
+									fileDir := "data/localdb"
+									if err := exactRebuildAndSwitch(st.DB(), dc, fileDir); err != nil {
+										logger.L().Error("exact_rebuild_switch_error", "err", err)
+									} else {
+										logger.L().Info("exact_rebuild_switch_ok")
+									}
+								}()
+							} else {
+								logger.L().Debug("plugin_fusion_skip_localdb", "score", score, "min", minScore, "old_complete", oldComplete, "new_complete", newComplete)
+							}
+						}
+					}
+				}
 				if rc != nil {
 					if res.Country != "" || res.Region != "" || res.Province != "" || res.City != "" || res.ISP != "" {
 						b, _ := json.Marshal(res)
@@ -315,10 +464,16 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 				}()
 				if added {
 					_ = st.IncrStats(ctx, ip)
+					_ = st.RecordRecent(ctx, ip)
 				}
 				w.Header().Set("content-type", "application/json; charset=utf-8")
 				w.Header().Set("cache-control", "no-store")
 				_ = json.NewEncoder(w).Encode(res)
+				metrics.RequestsTotal.Inc()
+				metrics.RequestDurationMs.Observe(float64(time.Since(tBegin).Milliseconds()))
+				if res.Country == "" && res.Region == "" && res.Province == "" && res.City == "" && res.ISP == "" {
+					metrics.EmptyResultsTotal.Inc()
+				}
 				return
 			}
 			logger.L().Debug("localdb_miss")
@@ -347,10 +502,63 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 				}
 				if added {
 					_ = st.IncrStats(ctx, ip)
+					_ = st.RecordRecent(ctx, ip)
 				}
 			}
 			if loc == nil {
 				logger.L().Debug("db_range_miss")
+			}
+		}
+		// 插件融合：DB 未命中或命中但字段不完整且开关启用时触发
+		triggerFusion := ip != "" && !isIPv6 && pm != nil
+		if res.Country != "" || res.Region != "" || res.Province != "" || res.City != "" || res.ISP != "" {
+			needOnPartial := os.Getenv("ENABLE_FUSION_ON_PARTIAL_DB") == "true"
+			incomplete := (res.Province == "" || res.City == "")
+			if !needOnPartial || !incomplete {
+				triggerFusion = false
+			} else {
+				logger.L().Debug("fusion_on_partial_db", "ip", ip)
+			}
+		}
+		if triggerFusion {
+			ctx2, cancel := context.WithTimeout(ctx, 4*time.Second)
+			loc, score, conf, top := pm.Aggregate(ctx2, ip)
+			cancel()
+			if loc.Country != "" || loc.Region != "" || loc.Province != "" || loc.City != "" || loc.ISP != "" {
+				res.Country = loc.Country
+				res.Region = loc.Region
+				res.Province = loc.Province
+				res.City = loc.City
+				res.ISP = loc.ISP
+				assoc := "global"
+				if top != nil && top.Assoc != "" {
+					assoc = top.Assoc
+				}
+				logger.L().Debug("plugin_fusion_hit", "score", score, "conf", conf, "assoc", assoc)
+				_ = st.UpsertOverrideKV(ctx, assoc, ip, ingest.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, score, conf)
+				_, wExact := fusion.DecideWrite(fusion.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, score)
+				if wExact {
+					if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+						v := p.To4()
+						ipInt := uint32(v[0])<<24 | uint32(v[1])<<16 | uint32(v[2])<<8 | uint32(v[3])
+						_ = ingest.WriteExact(ctx, st.DB(), ipInt, ingest.Location{Country: loc.Country, Region: loc.Region, Province: loc.Province, City: loc.City, ISP: loc.ISP}, assoc)
+						logger.L().Debug("plugin_write_exact", "ip", ip, "assoc", assoc)
+					}
+				}
+				if rc != nil {
+					b, _ := json.Marshal(res)
+					_ = rc.Set(ctx, "ip:"+ip, string(b), time.Duration(cacheSec)*time.Second).Err()
+					logger.L().Debug("cache_set", "key", "ip:"+ip, "len", len(b), "ttl_s", cacheSec)
+				}
+				go func() {
+					// 重建 ExactDB 并原子热切换链式缓存（ExactDB → IPIP → IP2Region）
+					fileDir := "data/localdb"
+					if err := exactRebuildAndSwitch(st.DB(), dc, fileDir); err != nil {
+						logger.L().Error("exact_rebuild_switch_error", "err", err)
+					} else {
+						logger.L().Info("exact_rebuild_switch_ok")
+					}
+				}()
 			}
 		}
 		w.Header().Set("content-type", "application/json; charset=utf-8")
@@ -360,6 +568,14 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 			w.Header().Set("Access-Control-Expose-Headers", "x-client-ip")
 		}
 		_ = json.NewEncoder(w).Encode(res)
+		if ip != "" {
+			_ = st.RecordRecent(ctx, ip)
+		}
+		metrics.RequestsTotal.Inc()
+		metrics.RequestDurationMs.Observe(float64(time.Since(tBegin).Milliseconds()))
+		if res.Country == "" && res.Region == "" && res.Province == "" && res.City == "" && res.ISP == "" {
+			metrics.EmptyResultsTotal.Inc()
+		}
 	})
 
 	// 背景：提供服务量统计，用于前端展示与简单监控；不做持久化聚合
@@ -389,4 +605,43 @@ func BuildRoutes(st *store.Store, rc *redis.Client, cache interface {
 	// })
 
 	return apiMux
+}
+
+// 文档注释：重建 ExactDB 并原子热切换动态缓存
+// 背景：写库成功后异步重建精确文件并切换链式缓存，避免并发阻塞与服务中断。
+// 约束：IPIP 路径与 IP2Region v4 路径通过环境变量提供；失败时保持现状不切换。
+func exactRebuildAndSwitch(db *sql.DB, dc *localdb.DynamicCache, dir string) error {
+	if dc == nil {
+		return nil
+	}
+	if err := exact.BuildExactDBFromDB(dir, db); err != nil {
+		return err
+	}
+	edb, err := exact.NewExactDB(dir, db)
+	if err != nil {
+		return err
+	}
+	var iptree interface {
+		Lookup(string) (localdb.Location, bool)
+	}
+	var ip2r interface {
+		Lookup(string) (localdb.Location, bool)
+	}
+	lang := os.Getenv("IPIP_LANG")
+	if lang == "" {
+		lang = "zh-CN"
+	}
+	if p := os.Getenv("IPIP_PATH"); p != "" {
+		if c, err := ipipcache.NewIPIPCache(p, lang); err == nil {
+			iptree = c
+		}
+	}
+	if p := os.Getenv("IP2REGION_V4_PATH"); p != "" {
+		if c, err := ip2region.NewIP2RegionCache(p, ""); err == nil {
+			ip2r = c
+		}
+	}
+	mc := chain.NewChainCache(edb, iptree, ip2r)
+	dc.Set(mc)
+	return nil
 }

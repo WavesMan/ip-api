@@ -4,16 +4,25 @@ package main
 import (
 	"context"
 	"ip-api/internal/api"
+	"ip-api/internal/fusion"
 	"ip-api/internal/ipip"
 	"ip-api/internal/localdb"
+	"ip-api/internal/localdb/chain"
+	"ip-api/internal/localdb/exact"
+	"ip-api/internal/localdb/ip2region"
+	ipipcache "ip-api/internal/localdb/ipip"
 	"ip-api/internal/logger"
+	"ip-api/internal/metrics"
+	"ip-api/internal/middleware"
 	"ip-api/internal/migrate"
+	"ip-api/internal/plugins"
 	"ip-api/internal/store"
 	"ip-api/internal/utils"
 	"ip-api/internal/version"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -21,6 +30,7 @@ import (
 
 func main() {
 	_ = godotenv.Load(".env")
+	_ = godotenv.Load(filepath.Join("data", "env", ".env"))
 	// 日志初始化
 	l := logger.Setup()
 	l.Debug("log_init_ok")
@@ -133,6 +143,19 @@ func main() {
 	fileDir := filepath.Join("data", "localdb")
 	l.Debug("config_localdb_dir", "dir", fileDir)
 	var dcache localdb.DynamicCache
+	// 文档注释：插件管理器初始化
+	// 背景：统一管理内置/外部插件，提供健康插件集合给融合层；在后台启动心跳监控。
+	pm := plugins.NewManager()
+	pm.Register(plugins.NewBuiltin("kv", "1.0", "kv", &fusion.KVSource{Store: st}))
+	l.Info("plugin_register", "name", "kv")
+	// 文档注释：注册 AMap 内置插件（在线查询）
+	// 背景：作为实时数据源参与融合；权重来自环境变量；需要服务端密钥。
+	if key := os.Getenv("AMAP_SERVER_KEY"); key != "" {
+		client := &http.Client{Timeout: 4 * time.Second}
+		pm.Register(plugins.NewAMapPlugin(key, client))
+		l.Info("plugin_register", "name", "amap")
+	}
+	pm.Start(context.Background())
 	go func() {
 		for {
 			var haveOverrides int64
@@ -142,16 +165,19 @@ func main() {
 			var mc interface {
 				Lookup(string) (localdb.Location, bool)
 			}
-			var exact interface {
+			var exactCache interface {
 				Lookup(string) (localdb.Location, bool)
 			}
 			var iptree interface {
 				Lookup(string) (localdb.Location, bool)
 			}
+			var ip2r interface {
+				Lookup(string) (localdb.Location, bool)
+			}
 			if haveOverrides > 0 || haveOverridesKV > 0 {
-				if err := localdb.BuildExactDBFromDB(fileDir, db); err == nil {
-					if edb, err := localdb.NewExactDB(fileDir, db); err == nil {
-						exact = edb
+				if err := exact.BuildExactDBFromDB(fileDir, db); err == nil {
+					if edb, err := exact.NewExactDB(fileDir, db); err == nil {
+						exactCache = edb
 						l.Info("exactdb_ready")
 					}
 				} else {
@@ -164,24 +190,66 @@ func main() {
 			if lang == "" {
 				lang = "zh-CN"
 			}
-			if iptree2, err := localdb.NewIPIPCache(ipipPath, lang); err == nil {
+			if iptree2, err := ipipcache.NewIPIPCache(ipipPath, lang); err == nil {
 				iptree = iptree2
 				l.Info("ipiptree_ready")
 			} else {
 				l.Error("ipiptree_error", "err", err)
 			}
-			if exact != nil || iptree != nil {
-				mc = localdb.NewMultiCache(exact, iptree)
+			// IP2Region v4（按需）
+			ip2rV4 := os.Getenv("IP2REGION_V4_PATH")
+			if ip2rV4 != "" {
+				if c, err := ip2region.NewIP2RegionCache(ip2rV4, ""); err == nil {
+					ip2r = c
+					l.Info("ip2region_ready")
+				} else {
+					l.Error("ip2region_error", "err", err)
+				}
+			}
+			if exactCache != nil || iptree != nil || ip2r != nil {
+				mc = chain.NewChainCache(exactCache, iptree, ip2r)
 				dcache.Set(mc)
 				l.Info("filecache_ready")
-				l.Debug("cache_stack", "exact", exact != nil, "tree", iptree != nil)
+				l.Debug("cache_stack", "exact", exactCache != nil, "tree", iptree != nil, "ip2r", ip2r != nil)
+				// 文档注释：注册内置插件（依赖缓存就绪）
+				// 背景：IPIP/IP2Region 作为内置插件加入融合；权重由环境变量或默认值决定。
+				if iptree != nil {
+					pm.Register(plugins.NewBuiltin("ipip", "1.0", "ipip", &fusion.IPIPSource{Cache: iptree}))
+					l.Info("plugin_register", "name", "ipip")
+				}
+				if ip2r != nil {
+					pm.Register(plugins.NewIP2RegionPlugin(ip2r))
+					l.Info("plugin_register", "name", "ip2region")
+				}
 				break
 			}
 			time.Sleep(2 * time.Second)
 		}
 	}()
-	apiMux := api.BuildRoutes(st, rc, &dcache)
+	// 文档注释：可选注册外部 HTTP 插件
+	// 背景：通过简单 HTTP 契约接入第三方数据源；避免 Go 动态插件在 Windows 的可移植性问题。
+	if ep := os.Getenv("EXT_PLUGIN_ENDPOINT"); ep != "" {
+		name := os.Getenv("EXT_PLUGIN_NAME")
+		if name == "" {
+			name = "ext"
+		}
+		assoc := os.Getenv("EXT_PLUGIN_ASSOC")
+		if assoc == "" {
+			assoc = "ext"
+		}
+		w := 5.0
+		if s := os.Getenv("EXT_PLUGIN_WEIGHT"); s != "" {
+			if n, e := strconv.ParseFloat(s, 64); e == nil && n > 0 {
+				w = n
+			}
+		}
+		pm.Register(plugins.NewHTTP(name, "1.0", assoc, ep, w))
+		l.Info("plugin_register", "name", name, "assoc", assoc)
+	}
+	// 文档注释：构建路由（携带动态缓存与插件管理器）
+	apiMux := api.BuildRoutes(st, rc, &dcache, pm)
 	mux.Handle(apiBase+"/", http.StripPrefix(apiBase, apiMux))
+	mux.Handle(apiBase+"/metrics", metrics.Handler())
 	mux.HandleFunc(apiBase+"/reload-exact", func(w http.ResponseWriter, r *http.Request) {
 		t := r.Header.Get("x-admin-token")
 		if t == "" || t != os.Getenv("ADMIN_TOKEN") {
@@ -192,12 +260,12 @@ func main() {
 		if lang == "" {
 			lang = "zh-CN"
 		}
-		var exact interface {
+		var exactCache interface {
 			Lookup(string) (localdb.Location, bool)
 		}
-		if err := localdb.BuildExactDBFromDB(fileDir, db); err == nil {
-			if edb, err := localdb.NewExactDB(fileDir, db); err == nil {
-				exact = edb
+		if err := exact.BuildExactDBFromDB(fileDir, db); err == nil {
+			if edb, err := exact.NewExactDB(fileDir, db); err == nil {
+				exactCache = edb
 				l.Info("exactdb_reloaded")
 			} else {
 				l.Error("exactdb_open_error", "err", err)
@@ -212,12 +280,12 @@ func main() {
 		var iptree interface {
 			Lookup(string) (localdb.Location, bool)
 		}
-		if iptree2, err := localdb.NewIPIPCache(ipipPath, lang); err == nil {
+		if iptree2, err := ipipcache.NewIPIPCache(ipipPath, lang); err == nil {
 			iptree = iptree2
 		} else {
 			l.Error("ipiptree_error", "err", err)
 		}
-		mc := localdb.NewMultiCache(exact, iptree)
+		mc := chain.NewMultiCache(exactCache, iptree)
 		dcache.Set(mc)
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -243,6 +311,7 @@ func main() {
 		addr = ":8080"
 	}
 	handler := logger.AccessMiddleware(l)(mux)
+	handler = middleware.Wrap(handler)
 	s := &http.Server{Addr: addr, Handler: handler}
 	l.Info("listening", "addr", addr)
 	_ = s.ListenAndServe()

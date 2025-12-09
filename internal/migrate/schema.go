@@ -69,6 +69,15 @@ func EnsureSchema(db *sql.DB) error {
             PRIMARY KEY (start_int, end_int, location_id)
         )`,
 		`CREATE INDEX IF NOT EXISTS idx_cidr_special_first_start ON _ip_cidr_special(first_octet, start_int)`,
+		`CREATE TABLE IF NOT EXISTS _ip_recent_ips (
+            ip_int BIGINT PRIMARY KEY,
+            last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+            queries BIGINT NOT NULL DEFAULT 0
+        )`,
+		`CREATE INDEX IF NOT EXISTS idx_recent_last_seen ON _ip_recent_ips(last_seen DESC)`,
+		// 补充覆盖 KV 的评分与置信度列
+		`ALTER TABLE _ip_overrides_kv ADD COLUMN IF NOT EXISTS score REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE _ip_overrides_kv ADD COLUMN IF NOT EXISTS confidence REAL NOT NULL DEFAULT 0`,
 	}
 	for i, s := range stmts {
 		logger.L().Debug("schema_exec", "idx", i)
