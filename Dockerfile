@@ -8,12 +8,8 @@ WORKDIR /app/ui
 COPY ui/package.json ./
 
 # 优先使用 ci，如无锁文件则回退 install
-RUN if [ -f package-lock.json ]; then \
-        npm ci --no-audit --no-fund --prefer-offline; \
-    else \
-        npm install --no-audit --no-fund --prefer-offline; \
-        npm audit fix --only=prod || true; \
-    fi
+RUN npm cache clean --force || true && rm -rf ~/.npm/_cacache || true && \
+    if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
 # 复制前端源码并构建产物
 COPY ui/ .
