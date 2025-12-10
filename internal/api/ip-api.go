@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"hash/fnv"
 	"ip-api/internal/fusion"
 	"ip-api/internal/ingest"
 	"ip-api/internal/localdb"
@@ -30,14 +29,7 @@ import (
 )
 
 // 查询结果结构：仅包含对外返回必要字段
-type queryResult struct {
-	IP       string `json:"ip"`
-	Country  string `json:"country"`
-	Region   string `json:"region"`
-	Province string `json:"province"`
-	City     string `json:"city"`
-	ISP      string `json:"isp"`
-}
+// 类型迁移至 types.go
 
 // 文档注释：查询返回结构
 // 背景：统一对外序列化模型，避免泄露内部字段或不同数据源差异；便于缓存与统计一致化。
@@ -47,145 +39,24 @@ type queryResult struct {
 // 文档注释：获取客户端 IP（用于业务查询参数）
 // 背景：多层代理环境下，优先显式参数，其次常见反向代理头，最后回退远端地址；确保在复杂链路中得到稳定的来源 IP。
 // 约束：不解析 IPv6 压缩形式的特殊头部变体；当头部存在伪造风险时，需在上游做可信代理白名单处理。
-func getClientIP(r *http.Request) string {
-	q := r.URL.Query().Get("ip")
-	if q != "" {
-		return q
-	}
-	h := r.Header
-	if x := h.Get("x-forwarded-for"); x != "" {
-		return strings.Split(x, ",")[0]
-	}
-	if x := h.Get("cf-connecting-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("x-real-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("x-client-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("x-edge-client-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("x-edgeone-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("forwarded"); x != "" {
-		i := strings.Index(strings.ToLower(x), "for=")
-		if i >= 0 {
-			y := x[i+4:]
-			y = strings.Trim(y, "\" ")
-			if p := strings.IndexByte(y, ';'); p >= 0 {
-				y = y[:p]
-			}
-			if p := strings.IndexByte(y, ','); p >= 0 {
-				y = y[:p]
-			}
-			return y
-		}
-	}
-	host := r.RemoteAddr
-	if host != "" {
-		if i := strings.LastIndex(host, ":"); i > 0 {
-			return host[:i]
-		}
-		return host
-	}
-	return ""
-}
+// 移至 ip_utils.go
 
 // 文档注释：获取访问者 IP（用于去重与限流）
 // 背景：与 getClientIP 分离，避免因查询目标与访问来源混淆导致去重不准；用于布隆去重键的组成。
 // 约束：同样依赖常见代理头顺序，若部署于未经信任的代理链路，需要配合网关过滤与鉴权策略。
-func getVisitorIP(r *http.Request) string {
-	h := r.Header
-	if x := h.Get("x-forwarded-for"); x != "" {
-		return strings.Split(x, ",")[0]
-	}
-	if x := h.Get("cf-connecting-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("x-real-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("x-client-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("x-edge-client-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("x-edgeone-ip"); x != "" {
-		return x
-	}
-	if x := h.Get("forwarded"); x != "" {
-		i := strings.Index(strings.ToLower(x), "for=")
-		if i >= 0 {
-			y := x[i+4:]
-			y = strings.Trim(y, "\" ")
-			if p := strings.IndexByte(y, ';'); p >= 0 {
-				y = y[:p]
-			}
-			if p := strings.IndexByte(y, ','); p >= 0 {
-				y = y[:p]
-			}
-			return y
-		}
-	}
-	host := r.RemoteAddr
-	if host != "" {
-		if i := strings.LastIndex(host, ":"); i > 0 {
-			return host[:i]
-		}
-		return host
-	}
-	return ""
-}
+// 移至 ip_utils.go
 
 // 文档注释：计算布隆过滤器位置
 // 参数：data 为参与哈希的字节序列，m 为位图大小（建议 2 的幂以便分布更均匀），k 为哈希次数（控制误判率与写入开销）。
 // 返回：长度为 k 的位置数组（int64），用于后续 GetBit/SetBit。
 // 约束：使用 FNV64a 结合索引扰动；误判率与 m/k 配置相关，需在生产按 QPS/TTL 实测调参。
-func bloomPositions(data []byte, m uint32, k int) []int64 {
-	pos := make([]int64, k)
-	for i := 0; i < k; i++ {
-		h := fnv.New64a()
-		h.Write([]byte{byte(i)})
-		h.Write(data)
-		v := h.Sum64()
-		p := uint32(v % uint64(m))
-		pos[i] = int64(p)
-	}
-	return pos
-}
+// 移至 bloom.go
 
 // 文档注释：检查并写入布隆过滤器位图
 // 背景：用于短周期去重，降低重复请求对后端与缓存的压力；命中视为“已见过”，不再重复处理。
 // 返回：true 表示首次见到（已写入位图，可继续处理）；false 表示已存在（建议直接快速返回或限频）。
 // 异常：Redis 交互错误时返回 error；当 rc 为 nil 时视为“允许处理”，避免阻断主流程。
-func bloomCheckAndSet(ctx context.Context, rc *redis.Client, key string, positions []int64, ttl time.Duration) (bool, error) {
-	if rc == nil {
-		return true, nil
-	}
-	seen := true
-	for _, p := range positions {
-		b, err := rc.GetBit(ctx, key, p).Result()
-		if err != nil {
-			return true, err
-		}
-		if b == 0 {
-			seen = false
-		}
-	}
-	if !seen {
-		for _, p := range positions {
-			_, _ = rc.SetBit(ctx, key, p, 1).Result()
-		}
-		_ = rc.Expire(ctx, key, ttl).Err()
-		return true, nil
-	}
-	return false, nil
-}
+// 移至 bloom.go
 
 // 构建并返回 API 路由：独立 ServeMux 便于在主入口挂载到 /api 前缀
 // 文档注释：构建并返回 API 路由
@@ -561,11 +432,45 @@ func BuildRoutes(st *store.Store, rc *redis.Client, dc *localdb.DynamicCache, pm
 				}()
 			}
 		}
+		// 文档注释：统一触发融合（在存在 EdgeOne 城市/区域时）
+		// 背景：避免因缓存/本地库命中而绕过融合，导致跨源拼接；当上下文中存在 EdgeOne 的强信号（城市/区域）时强制触发融合以稳定整组输出。
+		if pm != nil && !isIPv6 {
+			v := ctx.Value("edgeone_geo")
+			if v != nil {
+				if g, ok := v.(plugins.EdgeOneGeoInfo); ok {
+					if g.CityName != "" || g.RegionName != "" {
+						ctx2, cancel := context.WithTimeout(ctx, 4*time.Second)
+						loc, score, conf, top := pm.Aggregate(ctx2, ip)
+						cancel()
+						if loc.Country != "" || loc.Region != "" || loc.Province != "" || loc.City != "" || loc.ISP != "" {
+							res.Country = loc.Country
+							res.Region = loc.Region
+							res.Province = loc.Province
+							res.City = loc.City
+							res.ISP = loc.ISP
+							assoc := "global"
+							if top != nil && top.Assoc != "" {
+								assoc = top.Assoc
+							}
+							logger.L().Debug("plugin_fusion_force_edgeone", "score", score, "conf", conf, "assoc", assoc)
+						} else {
+							logger.L().Debug("plugin_fusion_force_edgeone_skip_empty")
+						}
+					}
+				}
+			}
+		}
 		w.Header().Set("content-type", "application/json; charset=utf-8")
 		w.Header().Set("cache-control", "no-store")
 		if ip != "" {
 			w.Header().Set("x-client-ip", ip)
 			w.Header().Set("Access-Control-Expose-Headers", "x-client-ip")
+		}
+		// 文档注释：终端兜底守护（一致性）
+		// 背景：在响应构造阶段进行一致性校验，当区域/城市明显属于中国而国家非中国时，执行兜底修正，避免跨源拼接造成的矛盾对外输出。
+		if fusion.CoherenceCoeff(fusion.Location{Country: res.Country, Region: res.Region, Province: res.Province, City: res.City, ISP: res.ISP}) < 1.0 {
+			logger.L().Info("api_country_fallback_applied", "prev_country", res.Country, "region", res.Region, "city", res.City)
+			res.Country = "中国"
 		}
 		_ = json.NewEncoder(w).Encode(res)
 		if ip != "" {

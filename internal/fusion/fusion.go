@@ -77,28 +77,27 @@ func Aggregate(ctx context.Context, sources []DataSource, ip string) (Location, 
 		top = top[:3]
 	}
 	var out Location
-	pick := func(get func(Location) string) string {
-		m := map[string]int{}
-		for _, r := range top {
-			v := get(r.Location)
-			m[v]++
-		}
-		best := ""
-		bestN := -1
-		for k, v := range m {
-			if v > bestN && k != "" {
-				best = k
-				bestN = v
-			}
-		}
-		if best != "" {
-			return best
-		}
-		if len(top) > 0 {
-			return get(top[0].Location)
-		}
-		return ""
-	}
+    pick := func(get func(Location) string) string {
+        if len(top) == 0 { return "" }
+        counts := map[string]int{}
+        for _, r := range top {
+            v := get(r.Location)
+            if v != "" { counts[v]++ }
+        }
+        max := 0
+        for _, c := range counts { if c > max { max = c } }
+        if max <= 1 {
+            return get(top[0].Location)
+        }
+        v0 := get(top[0].Location)
+        if counts[v0] == max { return v0 }
+        for _, r := range top {
+            v := get(r.Location)
+            if counts[v] == max { return v }
+        }
+        for v, c := range counts { if c == max { return v } }
+        return get(top[0].Location)
+    }
 	out.Country = pick(func(l Location) string { return l.Country })
 	out.Region = pick(func(l Location) string { return l.Region })
 	out.Province = pick(func(l Location) string { return l.Province })

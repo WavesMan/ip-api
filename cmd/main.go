@@ -146,9 +146,11 @@ func main() {
 	var dcache localdb.DynamicCache
 	// 文档注释：插件管理器初始化
 	// 背景：统一管理内置/外部插件，提供健康插件集合给融合层；在后台启动心跳监控。
-	pm := plugins.NewManager()
-	pm.Register(plugins.NewBuiltin("kv", "1.0", "kv", &fusion.KVSource{Store: st}))
-	l.Info("plugin_register", "name", "kv")
+    pm := plugins.NewManager()
+    pm.Register(plugins.NewBuiltin("kv", "1.0", "kv", &fusion.KVSource{Store: st}))
+    l.Info("plugin_register", "name", "kv")
+    pm.Register(plugins.NewEdgeOnePlugin())
+    l.Info("plugin_register", "name", "edgeone")
 	// 文档注释：注册 AMap 内置插件（在线查询）
 	// 背景：作为实时数据源参与融合；权重来自环境变量；需要服务端密钥。
 	if key := os.Getenv("AMAP_SERVER_KEY"); key != "" {

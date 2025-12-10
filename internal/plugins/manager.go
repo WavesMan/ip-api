@@ -134,6 +134,7 @@ type Weighted struct {
 	Score      float64
 	Confidence float64
 	Assoc      string
+	Name       string
 }
 
 // 文档注释：管理器聚合查询（返回融合与 Top 来源）
@@ -147,6 +148,7 @@ func (m *Manager) Aggregate(ctx context.Context, ip string) (fusion.Location, fl
 		Score float64
 		Conf  float64
 		Assoc string
+		Name  string
 	}
 	var results []wr
 	for _, p := range hs {
@@ -158,7 +160,8 @@ func (m *Manager) Aggregate(ctx context.Context, ip string) (fusion.Location, fl
 			w = 10
 		}
 		q := qualityCoeff(l)
-		sc := 100 * (w / 10.0) * q * c
+		co := fusion.CoherenceCoeff(l)
+		sc := 100 * (w / 10.0) * q * c * co
 		ms := float64(time.Since(t0).Milliseconds())
 		metrics.PluginDurationMs.WithLabelValues(p.Name()).Observe(ms)
 		if l.Country != "" || l.Region != "" || l.Province != "" || l.City != "" || l.ISP != "" {
@@ -166,7 +169,10 @@ func (m *Manager) Aggregate(ctx context.Context, ip string) (fusion.Location, fl
 		} else {
 			metrics.PluginFailTotal.WithLabelValues(p.Name()).Inc()
 		}
-		results = append(results, wr{Loc: l, Score: sc, Conf: c, Assoc: p.AssocKey()})
+		if co < 1.0 {
+			logger.L().Debug("plugin_coherence_penalty_applied", "name", p.Name(), "coeff", co)
+		}
+		results = append(results, wr{Loc: l, Score: sc, Conf: c, Assoc: p.AssocKey(), Name: p.Name()})
 		metrics.PluginScore.WithLabelValues(p.Name()).Observe(sc)
 		logger.L().Debug("plugin_weighted", "name", p.Name(), "w", w, "q", q, "c", c, "score", sc)
 	}
@@ -175,22 +181,62 @@ func (m *Manager) Aggregate(ctx context.Context, ip string) (fusion.Location, fl
 	if len(top) > 3 {
 		top = top[:3]
 	}
+	// 锚定源选择：KV 优先；其次 EdgeOne（有城市/区域且置信度较高）；否则取最高分
+	anchorIdx := -1
+	for i, r := range top {
+		if r.Name == "kv" && (r.Loc.City != "" || r.Loc.Region != "") {
+			anchorIdx = i
+			break
+		}
+	}
+	if anchorIdx == -1 {
+		for i, r := range top {
+			if r.Name == "edgeone" && (r.Loc.City != "" || r.Loc.Region != "") && r.Conf >= 0.8 {
+				anchorIdx = i
+				break
+			}
+		}
+	}
+	if anchorIdx == -1 && len(top) > 0 {
+		anchorIdx = 0
+	}
+	var anchor wr
+	if anchorIdx >= 0 {
+		anchor = top[anchorIdx]
+		logger.L().Debug("fusion_anchor_source", "name", anchor.Name, "score", anchor.Score, "conf", anchor.Conf)
+	}
 	var out fusion.Location
-	pick := func(get func(fusion.Location) string) string {
-		m := map[string]int{}
+	pick := func(get func(fusion.Location) string, anchorVal string) string {
+		if anchorVal != "" {
+			return anchorVal
+		}
+		weights := map[string]float64{}
 		for _, r := range top {
 			v := get(r.Loc)
-			m[v]++
+			if v != "" {
+				weights[v] += r.Score
+			}
 		}
-		best := ""
-		bestN := -1
-		for k, v := range m {
-			if v > bestN && k != "" {
-				best = k
-				bestN = v
+		var best string
+		var bestW float64
+		for v, w := range weights {
+			if w > bestW {
+				bestW = w
+				best = v
 			}
 		}
 		if best != "" {
+			// 并列时优先锚定值
+			if anchorVal != "" && weights[anchorVal] == bestW {
+				return anchorVal
+			}
+			// 其次按 Top 顺序选择第一个达到 bestW 的值
+			for _, r := range top {
+				v := get(r.Loc)
+				if v != "" && weights[v] == bestW {
+					return v
+				}
+			}
 			return best
 		}
 		if len(top) > 0 {
@@ -198,17 +244,22 @@ func (m *Manager) Aggregate(ctx context.Context, ip string) (fusion.Location, fl
 		}
 		return ""
 	}
-	out.Country = pick(func(l fusion.Location) string { return l.Country })
-	out.Region = pick(func(l fusion.Location) string { return l.Region })
-	out.Province = pick(func(l fusion.Location) string { return l.Province })
-	out.City = pick(func(l fusion.Location) string { return l.City })
-	out.ISP = pick(func(l fusion.Location) string { return l.ISP })
+	out.Country = pick(func(l fusion.Location) string { return l.Country }, anchor.Loc.Country)
+	out.Region = pick(func(l fusion.Location) string { return l.Region }, anchor.Loc.Region)
+	out.Province = pick(func(l fusion.Location) string { return l.Province }, anchor.Loc.Province)
+	out.City = pick(func(l fusion.Location) string { return l.City }, anchor.Loc.City)
+	out.ISP = pick(func(l fusion.Location) string { return l.ISP }, anchor.Loc.ISP)
+	// 国家兜底：当区域/城市显然属于中国而国家非中国，修正为中国
+	if fusion.CoherenceCoeff(out) < 1.0 {
+		logger.L().Info("fusion_country_fallback_applied", "prev_country", out.Country, "region", out.Region, "city", out.City)
+		out.Country = "中国"
+	}
 	var maxScore, maxConf float64
 	var topW *Weighted
 	if len(results) > 0 {
 		maxScore = results[0].Score
 		maxConf = results[0].Conf
-		topW = &Weighted{Loc: results[0].Loc, Score: results[0].Score, Confidence: results[0].Conf, Assoc: results[0].Assoc}
+		topW = &Weighted{Loc: results[0].Loc, Score: results[0].Score, Confidence: results[0].Conf, Assoc: results[0].Assoc, Name: results[0].Name}
 	}
 	if topW != nil {
 		logger.L().Debug("plugin_aggregate_top", "score", topW.Score, "assoc", topW.Assoc, "conf", topW.Confidence)
