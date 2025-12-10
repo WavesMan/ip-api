@@ -8,8 +8,12 @@ WORKDIR /app/ui
 COPY ui/package.json ./
 
 # 优先使用 ci，如无锁文件则回退 install
-RUN npm cache clean --force || true && rm -rf ~/.npm/_cacache || true && \
-    if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+RUN if [ -f package-lock.json ]; then \
+        npm ci --no-audit --no-fund --prefer-offline; \
+    else \
+        npm install --no-audit --no-fund --prefer-offline; \
+        npm audit fix --only=prod || true; \
+    fi
 
 # 复制前端源码并构建产物
 COPY ui/ .
@@ -19,6 +23,9 @@ RUN npm run build
 # ---------- 后端构建阶段 ----------
 FROM golang:1.22-alpine AS go-builder
 WORKDIR /src
+
+ARG GOPROXY=https://mirrors.aliyun.com/goproxy/,direct
+ENV GOPROXY=${GOPROXY}
 
 # 复制 go.mod/go.sum 先拉依赖，提升缓存复用
 COPY go.mod ./
