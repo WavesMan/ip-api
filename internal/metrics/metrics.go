@@ -72,6 +72,25 @@ var (
 		Help:    "Plugin weighted score distribution",
 		Buckets: []float64{10, 20, 40, 60, 80, 90, 100},
 	}, []string{"plugin"})
+
+	// 反地理指标
+	ReverseGeoRequestsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ipapi_reverse_geo_requests_total",
+		Help: "Total number of /api/reverse_geo requests",
+	})
+	ReverseGeoDurationMs = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ipapi_reverse_geo_duration_ms",
+		Help:    "Reverse geo request duration in milliseconds",
+		Buckets: []float64{1, 5, 10, 20, 50, 100, 200, 500, 1000},
+	})
+	ReverseGeoPipHitsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ipapi_reverse_geo_pip_hits_total",
+		Help: "Total reverse geo PIP hits",
+	})
+	ReverseGeoNearestFallbackTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ipapi_reverse_geo_nearest_fallback_total",
+		Help: "Total reverse geo nearest fallback",
+	})
 )
 
 func init() {
@@ -90,6 +109,10 @@ func init() {
 	prometheus.MustRegister(PluginDurationMs)
 	prometheus.MustRegister(PluginHeartbeatTotal)
 	prometheus.MustRegister(PluginScore)
+	prometheus.MustRegister(ReverseGeoRequestsTotal)
+	prometheus.MustRegister(ReverseGeoDurationMs)
+	prometheus.MustRegister(ReverseGeoPipHitsTotal)
+	prometheus.MustRegister(ReverseGeoNearestFallbackTotal)
 }
 
 // 文档注释：返回 Prometheus 指标监听器

@@ -20,6 +20,7 @@ data/localdb/
 data/certs/
 *.exe
 方案设计.md
+debug*
 
 .env*
 .env.*

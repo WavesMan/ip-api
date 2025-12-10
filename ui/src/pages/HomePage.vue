@@ -1,12 +1,21 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 
 const emit = defineEmits([])
 const isMobile = ref(false)
 
-onMounted(() => {
+function updateIsMobile() {
   const ua = navigator.userAgent || ''
   isMobile.value = /Mobile|Android|iPhone|iPad/i.test(ua) || window.innerWidth < 640
+}
+onMounted(() => {
+  updateIsMobile()
+  window.addEventListener('resize', updateIsMobile)
+  window.addEventListener('orientationchange', updateIsMobile)
+})
+onUnmounted(() => {
+  window.removeEventListener('resize', updateIsMobile)
+  window.removeEventListener('orientationchange', updateIsMobile)
 })
 
 const queryIp = ref('')
@@ -39,6 +48,17 @@ async function fetchStats() {
 onMounted(() => { fetchStats() })
 
 const visitorResult = ref(null)
+const visitorLocationText = computed(() => {
+  const v = visitorResult.value
+  if (!v) return ''
+  const s = [v.country, v.region, v.province, v.city].filter(Boolean).join(' / ')
+  return s || '-'
+})
+function needStack(text) {
+  const t = (text || '').toString()
+  const threshold = 24
+  return isMobile.value || t.length > threshold
+}
 async function fetchVisitor() {
   try {
     const base = window.__API_BASE__ || '/api'
@@ -95,15 +115,15 @@ async function onSearch() {
       </div>
 
       <div v-if="visitorResult" class="visitor" :class="isMobile ? 'visitor--mobile' : 'visitor--desktop'">
-        <div class="visitor__section">
+        <div class="visitor__section" :class="needStack(visitorResult.ip) ? 'visitor__section--stack' : ''">
           <div class="visitor__label">你的来访 IP</div>
           <div class="visitor__value visitor__value--ip">{{ visitorResult.ip }}</div>
         </div>
-        <div class="visitor__section">
+        <div class="visitor__section" :class="needStack(visitorLocationText) ? 'visitor__section--stack' : ''">
           <div class="visitor__label">属地</div>
-          <div class="visitor__value visitor__value--text">{{ [visitorResult.country, visitorResult.region, visitorResult.province, visitorResult.city].filter(Boolean).join(' / ') || '-' }}</div>
+          <div class="visitor__value visitor__value--text">{{ visitorLocationText }}</div>
         </div>
-        <div class="visitor__section">
+        <div class="visitor__section" :class="needStack(visitorResult.isp || '-') ? 'visitor__section--stack' : ''">
           <div class="visitor__label">运营商</div>
           <div class="visitor__value visitor__value--text">{{ visitorResult.isp || '-' }}</div>
         </div>
@@ -293,18 +313,36 @@ async function onSearch() {
   @apply text-gray-300; 
   @apply flex; 
   @apply items-center; 
+  @apply justify-start; 
   @apply gap-4; 
+}
+.visitor__section--stack { 
+  @apply flex-wrap; 
+  @apply items-start; 
+}
+.visitor__section--stack .visitor__label { 
+  @apply basis-full; 
+  @apply text-left; 
+}
+.visitor__section--stack .visitor__value { 
+  @apply basis-full; 
+  @apply whitespace-normal; 
+  @apply break-words; 
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .visitor__label { 
   @apply shrink-0; 
   @apply text-sm; 
   @apply text-gray-400; 
+  @apply text-left; 
 }
 
 .visitor__value { 
   @apply font-semibold; 
   @apply truncate; 
+  @apply text-left; 
 }
 
 .visitor__value--ip { 
@@ -551,3 +589,18 @@ async function onSearch() {
   @apply text-gray-400; 
 }
 </style>
+.visitor__value--text { 
+  @apply text-base; 
+}
+
+@media (max-width: 640px) {
+  .visitor__value--ip { 
+    font-size: clamp(1.25rem, 8vw, 1.75rem);
+  }
+  .visitor__value--text {
+    font-size: clamp(0.875rem, 3.8vw, 1rem);
+  }
+  .visitor__label {
+    font-size: 0.875rem;
+  }
+}

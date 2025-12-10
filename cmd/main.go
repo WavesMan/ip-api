@@ -18,11 +18,9 @@ import (
 	"ip-api/internal/plugins"
 	"ip-api/internal/store"
 	"ip-api/internal/utils"
-	"ip-api/internal/version"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -146,19 +144,25 @@ func main() {
 	var dcache localdb.DynamicCache
 	// 文档注释：插件管理器初始化
 	// 背景：统一管理内置/外部插件，提供健康插件集合给融合层；在后台启动心跳监控。
-    pm := plugins.NewManager()
-    pm.Register(plugins.NewBuiltin("kv", "1.0", "kv", &fusion.KVSource{Store: st}))
-    l.Info("plugin_register", "name", "kv")
-    pm.Register(plugins.NewEdgeOnePlugin())
-    l.Info("plugin_register", "name", "edgeone")
-	// 文档注释：注册 AMap 内置插件（在线查询）
-	// 背景：作为实时数据源参与融合；权重来自环境变量；需要服务端密钥。
-	if key := os.Getenv("AMAP_SERVER_KEY"); key != "" {
-		client := &http.Client{Timeout: 4 * time.Second}
-		pm.Register(plugins.NewAMapPlugin(key, client))
-		l.Info("plugin_register", "name", "amap")
-	}
+	pm := plugins.NewManager()
+	pm.Register(plugins.NewBuiltin("kv", "1.0", "kv", &fusion.KVSource{Store: st}))
+	l.Info("plugin_register", "name", "kv")
+	pm.Register(plugins.NewEdgeOnePlugin())
+	l.Info("plugin_register", "name", "edgeone")
+	// 外部地理接口移除：不注册 AMap 在线插件，避免外部调用与敏感信息外泄
 	pm.Start(context.Background())
+	// 文档注释：注册反地理插件（按坐标查询）
+	// 背景：采用插件标准载入新模块；数据目录默认 data/revgeo，可通过 REVERSE_GEO_DATA_DIR 配置。
+	dataDir := os.Getenv("REVERSE_GEO_DATA_DIR")
+	if dataDir == "" {
+		dataDir = filepath.Join("data", "revgeo")
+	}
+	if p, err := plugins.NewReverseGeoPlugin(dataDir); err == nil {
+		pm.Register(p)
+		l.Info("plugin_register", "name", "revgeo")
+	} else {
+		l.Error("revgeo_init_error", "err", err)
+	}
 	go func() {
 		for {
 			var haveOverrides int64
@@ -229,26 +233,7 @@ func main() {
 			time.Sleep(2 * time.Second)
 		}
 	}()
-	// 文档注释：可选注册外部 HTTP 插件
-	// 背景：通过简单 HTTP 契约接入第三方数据源；避免 Go 动态插件在 Windows 的可移植性问题。
-	if ep := os.Getenv("EXT_PLUGIN_ENDPOINT"); ep != "" {
-		name := os.Getenv("EXT_PLUGIN_NAME")
-		if name == "" {
-			name = "ext"
-		}
-		assoc := os.Getenv("EXT_PLUGIN_ASSOC")
-		if assoc == "" {
-			assoc = "ext"
-		}
-		w := 5.0
-		if s := os.Getenv("EXT_PLUGIN_WEIGHT"); s != "" {
-			if n, e := strconv.ParseFloat(s, 64); e == nil && n > 0 {
-				w = n
-			}
-		}
-		pm.Register(plugins.NewHTTP(name, "1.0", assoc, ep, w))
-		l.Info("plugin_register", "name", name, "assoc", assoc)
-	}
+	// 外部地理接口移除：不注册进程外 HTTP 插件，避免外部调用与敏感信息外泄
 	// 文档注释：构建路由（携带动态缓存与插件管理器）
 	apiMux := api.BuildRoutes(st, rc, &dcache, pm)
 	mux.Handle(apiBase+"/", http.StripPrefix(apiBase, apiMux))
@@ -305,10 +290,8 @@ func main() {
 		_, _ = w.Write([]byte("window.__DATA_SOURCE__='IPIP 数据库'"))
 		_, _ = w.Write([]byte("\n"))
 		_, _ = w.Write([]byte("window.__DATA_SOURCE_URL__='https://www.ipip.net'"))
-		_, _ = w.Write([]byte("\n"))
-		_, _ = w.Write([]byte("window.__COMMIT_SHA__='" + version.Commit + "'"))
+		// 移除敏感信息：不向前端暴露提交哈希
 	})
-
 	addr := os.Getenv("ADDR")
 	if addr == "" {
 		addr = ":8080"
