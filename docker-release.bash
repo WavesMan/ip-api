@@ -39,8 +39,6 @@ print_info "设置环境变量..."
 export GOPROXY=https://mirrors.aliyun.com/goproxy/,direct
 export NPM_CONFIG_REGISTRY=https://ks-mirror.waveyo.cn
 export DOCKER_BUILDKIT=1
-git config --global http.proxy http://172.26.160.1:7897
-git config --global https.proxy http://172.26.160.1:7897
 
 echo -e "  GOPROXY: ${GREEN}${GOPROXY}${NC}"
 echo -e "  NPM_REGISTRY: ${GREEN}${NPM_CONFIG_REGISTRY}${NC}"
